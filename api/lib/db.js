@@ -20,6 +20,20 @@ export async function saveTokens(tokens) {
 
 export async function loadTokens() {
   if (memoryTokens) return memoryTokens;
+
+  // Priority 1: Environment Variable GOOGLE_TOKENS (for Vercel serverless)
+  if (process.env.GOOGLE_TOKENS) {
+    try {
+      memoryTokens = typeof process.env.GOOGLE_TOKENS === 'string' 
+        ? JSON.parse(process.env.GOOGLE_TOKENS) 
+        : process.env.GOOGLE_TOKENS;
+      return memoryTokens;
+    } catch (e) {
+      console.error('[TOKENS ERROR] Fallo al parsear GOOGLE_TOKENS env:', e.message);
+    }
+  }
+
+  // Priority 2: Local .tokens.json file
   try {
     if (fs.existsSync(TOKENS_FILE)) {
       const data = fs.readFileSync(TOKENS_FILE, 'utf8');
