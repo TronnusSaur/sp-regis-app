@@ -295,7 +295,7 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
       locationDesc: sanitizeString(locationDesc),
       delegacion: sanitizeString(delegacion, 100),
       colonia: sanitizeString(colonia, 100),
-      tipoBache: sanitizeString(tipoBache, 50),
+      tipoBache: (parseFloat(profundidad) || 0) > 0.07 ? 'PROFUNDO' : 'SUPERFICIAL',
       calle_1: sanitizeString(calle1, 200),
       calle_2: sanitizeString(calle2, 200),
       largo: parseFloat(largo) || 0,

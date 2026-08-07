@@ -273,7 +273,7 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           <div className="mt-3 flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Clasificación Técnica</span>
             <span className="text-xs font-black text-cyan-600 uppercase">
-              {selectedReport.tipoBache || selectedReport.tipobache || 'SUPERFICIAL'}
+              {(selectedReport.profundidad || 0) > 0.07 ? 'PROFUNDO' : (selectedReport.tipoBache || selectedReport.tipobache || 'SUPERFICIAL')}
             </span>
           </div>
         </div>
@@ -284,26 +284,37 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
             <MapPin size={14} className="text-cyan-600" /> Ubicación y Georreferenciación
           </h3>
 
-          <div className="location-list">
-            <div className="loc-item">
-              <span className="loc-label">Delegación / Colonia</span>
-              <span className="loc-val">{selectedReport.delegacion || 'TOLUCA'} — {selectedReport.colonia || 'CENTRO'}</span>
-            </div>
-            <div className="loc-item">
-              <span className="loc-label">Calle Principal / Ubicación</span>
-              <span className="loc-val">{selectedReport.locationdesc || selectedReport.locationDesc || selectedReport.calle_1 || 'No especificada'}</span>
-            </div>
-            {(selectedReport.calle_2 || selectedReport.calle2) && (
-              <div className="loc-item">
-                <span className="loc-label">Entre Calles</span>
-                <span className="loc-val">{selectedReport.calle_2 || selectedReport.calle2}</span>
+          {(() => {
+            const c1 = selectedReport.calle_1 || selectedReport.calle1 || '';
+            const c2 = selectedReport.calle_2 || selectedReport.calle2 || '';
+            let entreCalles = '';
+            if (c1 && c2) entreCalles = `${c1} Y ${c2}`;
+            else if (c1) entreCalles = c1;
+            else if (c2) entreCalles = c2;
+
+            return (
+              <div className="location-list">
+                <div className="loc-item">
+                  <span className="loc-label">Delegación / Colonia</span>
+                  <span className="loc-val">{selectedReport.delegacion || 'TOLUCA'} — {selectedReport.colonia || 'CENTRO'}</span>
+                </div>
+                <div className="loc-item">
+                  <span className="loc-label">Calle Principal / Ubicación</span>
+                  <span className="loc-val">{selectedReport.locationdesc || selectedReport.locationDesc || 'No especificada'}</span>
+                </div>
+                {entreCalles && (
+                  <div className="loc-item">
+                    <span className="loc-label">Entre Calles</span>
+                    <span className="loc-val">{entreCalles}</span>
+                  </div>
+                )}
+                <div className="loc-item">
+                  <span className="loc-label">Coordenadas GPS</span>
+                  <span className="loc-val font-mono text-xs text-slate-500">{lat}, {lng}</span>
+                </div>
               </div>
-            )}
-            <div className="loc-item">
-              <span className="loc-label">Coordenadas GPS</span>
-              <span className="loc-val font-mono text-xs text-slate-500">{lat}, {lng}</span>
-            </div>
-          </div>
+            );
+          })()}
 
           {lat !== 0 && lng !== 0 && (
             <a 

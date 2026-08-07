@@ -165,7 +165,11 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
     submission.append('calle2', formData.calle2);
     submission.append('delegacion', formData.delegacion);
     submission.append('colonia', formData.colonia);
-    submission.append('tipoBache', formData.tipoBache);
+    
+    const profNum = parseFloat(formData.profundidad) || 0;
+    const calculatedTipoBache = profNum > 0.07 ? 'PROFUNDO' : 'SUPERFICIAL';
+    submission.append('tipoBache', calculatedTipoBache);
+    
     if (formData.largo) submission.append('largo', formData.largo);
     if (formData.ancho) submission.append('ancho', formData.ancho);
     if (formData.profundidad) submission.append('profundidad', formData.profundidad);
