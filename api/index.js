@@ -313,63 +313,60 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
     // Update in-memory cache immediately
     reportsCache.unshift(newReport);
 
-    // Respond immediately to client
+    // 1. Upload fotos a Drive (await para Vercel serverless lifecycle)
+    try {
+      const rootFolder = process.env.DRIVE_PARENT_FOLDER_ID;
+      const contractNumForFolder = (newReport.contractId.match(/\d+/)?.[0] || '0').padStart(3, '0');
+      const contractFolderName = `${contractNumForFolder} ${newReport.empresaName}`;
+      
+      let folioFolderId = null;
+      if (rootFolder) {
+        const contractFolderId = await getOrCreateFolder(contractFolderName, rootFolder);
+        folioFolderId = await getOrCreateFolder(newReport.folio, contractFolderId);
+      }
+
+      // Upload Inicial
+      if (photoInicialFile && folioFolderId) {
+        const buf = fs.readFileSync(photoInicialFile.path);
+        const driveRes = await uploadFile(`${newReport.folio}_inicial.jpg`, 'image/jpeg', buf, folioFolderId);
+        newReport.photoUrl = driveRes.webViewLink;
+        cleanupTempFile(photoInicialFile);
+      }
+
+      // Upload Caja
+      if (photoCajaFile && folioFolderId) {
+        const buf = fs.readFileSync(photoCajaFile.path);
+        const driveRes = await uploadFile(`${newReport.folio}_caja.jpg`, 'image/jpeg', buf, folioFolderId);
+        newReport.photoCaja = driveRes.webViewLink;
+        cleanupTempFile(photoCajaFile);
+      }
+
+      // Upload Final
+      if (photoFinalFile && folioFolderId) {
+        const buf = fs.readFileSync(photoFinalFile.path);
+        const driveRes = await uploadFile(`${newReport.folio}_final.jpg`, 'image/jpeg', buf, folioFolderId);
+        newReport.photoFinal = driveRes.webViewLink;
+        cleanupTempFile(photoFinalFile);
+      }
+    } catch (driveErr) {
+      console.error(`[DRIVE ERROR] Folio ${newReport.folio}:`, driveErr.message);
+    }
+
+    // 2. Escribir en Google Sheets (await para Vercel serverless lifecycle)
+    try {
+      if (process.env.SHEET_ID) {
+        await appendReportToSheet(process.env.SHEET_ID, newReport);
+        console.log(`[SHEETS SUCCESS] ✅ Folio ${newReport.folio} registrado en Google Sheets.`);
+      }
+    } catch (sheetsErr) {
+      console.error(`[SHEETS ERROR] Folio ${newReport.folio}:`, sheetsErr.message);
+    }
+
+    // 3. Responder al cliente una vez completadas las subidas
     res.status(201).json({
       folio: newReport.folio,
       status: newReport.status,
       success: true
-    });
-
-    // Background Drive & Sheets upload
-    setImmediate(async () => {
-      // BLOQUE A: Upload fotos a Drive (errores no bloquean Sheets)
-      try {
-        const rootFolder = process.env.DRIVE_PARENT_FOLDER_ID;
-        const contractNumForFolder = (newReport.contractId.match(/\d+/)?.[0] || '0').padStart(3, '0');
-        const contractFolderName = `${contractNumForFolder} ${newReport.empresaName}`;
-        
-        let folioFolderId = null;
-        if (rootFolder) {
-          const contractFolderId = await getOrCreateFolder(contractFolderName, rootFolder);
-          folioFolderId = await getOrCreateFolder(newReport.folio, contractFolderId);
-        }
-
-        // Upload Inicial
-        if (photoInicialFile && folioFolderId) {
-          const buf = fs.readFileSync(photoInicialFile.path);
-          const driveRes = await uploadFile(`${newReport.folio}_inicial.jpg`, 'image/jpeg', buf, folioFolderId);
-          newReport.photoUrl = driveRes.webViewLink;
-          cleanupTempFile(photoInicialFile);
-        }
-
-        // Upload Caja
-        if (photoCajaFile && folioFolderId) {
-          const buf = fs.readFileSync(photoCajaFile.path);
-          const driveRes = await uploadFile(`${newReport.folio}_caja.jpg`, 'image/jpeg', buf, folioFolderId);
-          newReport.photoCaja = driveRes.webViewLink;
-          cleanupTempFile(photoCajaFile);
-        }
-
-        // Upload Final
-        if (photoFinalFile && folioFolderId) {
-          const buf = fs.readFileSync(photoFinalFile.path);
-          const driveRes = await uploadFile(`${newReport.folio}_final.jpg`, 'image/jpeg', buf, folioFolderId);
-          newReport.photoFinal = driveRes.webViewLink;
-          cleanupTempFile(photoFinalFile);
-        }
-      } catch (driveErr) {
-        console.error(`[BG-DRIVE ERROR] Folio ${newReport.folio}:`, driveErr.message);
-      }
-
-      // BLOQUE B: Escribir en Google Sheets (SIEMPRE se ejecuta)
-      try {
-        if (process.env.SHEET_ID) {
-          await appendReportToSheet(process.env.SHEET_ID, newReport);
-          console.log(`[BG-SHEETS] ✅ Folio ${newReport.folio} registrado en Google Sheets.`);
-        }
-      } catch (sheetsErr) {
-        console.error(`[BG-SHEETS ERROR] Folio ${newReport.folio}:`, sheetsErr.message);
-      }
     });
 
   } catch (err) {
@@ -389,31 +386,30 @@ app.post('/api/reports/:folio/photo', requireAuth, upload.single('photo'), async
   }
 
   const nextStatus = phase === 'caja' ? 'EN PROCESO' : 'TERMINADO';
-  res.json({ success: true, status: nextStatus });
-
   const tempFilePath = req.file?.path || null;
-  setImmediate(async () => {
-    try {
-      if (tempFilePath && process.env.SHEET_ID) {
-        const buf = fs.readFileSync(tempFilePath);
-        const rootFolder = process.env.DRIVE_PARENT_FOLDER_ID;
-        const folioFolderId = await getOrCreateFolder(folio, rootFolder);
-        const photoName = `${folio}_${phase}.jpg`;
-        const driveRes = await uploadFile(photoName, 'image/jpeg', buf, folioFolderId);
-        
-        const updates = { status: nextStatus, usuario: req.user.email };
-        if (phase === 'caja') updates.photoCaja = driveRes.webViewLink;
-        else updates.photoFinal = driveRes.webViewLink;
 
-        await updateReportInSheet(process.env.SHEET_ID, folio, updates);
-        console.log(`[BG-PHOTO] ✅ Foto ${phase} actualizada para folio ${folio}.`);
-      }
-    } catch (e) {
-      console.error(`[BG-PHOTO ERROR] ${e.message}`);
-    } finally {
-      if (tempFilePath) cleanupTempFile({ path: tempFilePath });
+  try {
+    if (tempFilePath && process.env.SHEET_ID) {
+      const buf = fs.readFileSync(tempFilePath);
+      const rootFolder = process.env.DRIVE_PARENT_FOLDER_ID;
+      const folioFolderId = await getOrCreateFolder(folio, rootFolder);
+      const photoName = `${folio}_${phase}.jpg`;
+      const driveRes = await uploadFile(photoName, 'image/jpeg', buf, folioFolderId);
+      
+      const updates = { status: nextStatus, usuario: req.user.email };
+      if (phase === 'caja') updates.photoCaja = driveRes.webViewLink;
+      else updates.photoFinal = driveRes.webViewLink;
+
+      await updateReportInSheet(process.env.SHEET_ID, folio, updates);
+      console.log(`[PHOTO SUCCESS] ✅ Foto ${phase} actualizada para folio ${folio}.`);
     }
-  });
+  } catch (e) {
+    console.error(`[PHOTO ERROR] ${e.message}`);
+  } finally {
+    if (tempFilePath) cleanupTempFile({ path: tempFilePath });
+  }
+
+  res.json({ success: true, status: nextStatus });
 });
 
 // Update Status
