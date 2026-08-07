@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { LayoutGrid, Plus, LayoutList, Map as MapIcon, WifiOff, LogOut } from 'lucide-react'
 import { registerAutoSync } from './lib/syncService'
 import { getPendingItems } from './lib/robustStore'
-import { onAuthChange, signOut } from './lib/firebase'
-import type { User } from 'firebase/auth'
+import { onAuthChange, signOut, type AppUser } from './lib/firebase'
 import MetricsScreen from './screens/MetricsScreen'
 import FormScreen from './screens/FormScreen'
 import LogScreen from './screens/LogScreen'
@@ -15,15 +14,15 @@ type Tab = 'MAPA' | 'NUEVO' | 'BITACORA' | 'METRICAS'
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('METRICAS')
   const [pendingCount, setPendingCount] = useState(0)
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<AppUser | null>(null)
   const [userProfile, setUserProfile] = useState<{role: string, assignments: string[]} | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
 
-  // Listen to Firebase auth state (auto-restores from cache, works offline)
+  // Listen to auth state (auto-restores from cache, works offline)
   useEffect(() => {
-    const unsubscribe = onAuthChange((firebaseUser) => {
-      setUser(firebaseUser)
-      if (!firebaseUser) {
+    const unsubscribe = onAuthChange((appUser) => {
+      setUser(appUser)
+      if (!appUser) {
         setUserProfile(null)
       }
       setAuthLoading(false)

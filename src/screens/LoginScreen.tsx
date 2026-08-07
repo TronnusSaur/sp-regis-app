@@ -51,8 +51,8 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           <div className="login-icon-ring">
             <Shield size={32} />
           </div>
-          <h1 className="login-title">Bacheo <span className="login-accent">Toluca</span></h1>
-          <p className="login-subtitle">SISTEMA DE SUPERVISIÓN EN CAMPO</p>
+          <h1 className="login-title">SP <span className="login-accent">REGIS</span></h1>
+          <p className="login-subtitle">SERVICIOS PÚBLICOS DE TOLUCA</p>
         </div>
 
         {/* Error Banner */}
@@ -66,11 +66,11 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         {/* Login Form */}
         <form onSubmit={handleSubmit} className="login-form">
           <div className="login-field">
-            <label htmlFor="login-email">Correo Institucional</label>
+            <label htmlFor="login-email">Correo Institucional / Usuario</label>
             <input
               id="login-email"
               type="email"
-              placeholder="supervisor@bacheo.gob.mx"
+              placeholder="servicios.publicos@toluca.gob.mx"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
