@@ -17,11 +17,13 @@ function logSheets(msg, data = null) {
  * Foto Inicial (Link), Photo Caja, Photo Final, Calle 1, Calle 2, Responsable (T)
  */
 function mapReportToRow(report) {
-  const fecha = new Date().toLocaleString('es-MX', { 
+  const fechaStr = new Date().toLocaleString('es-MX', { 
     timeZone: 'America/Mexico_City',
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
+  // Prepend single quote so Google Sheets treats it as plain text and doesn't convert to raw serial number
+  const fecha = `'${fechaStr}`;
 
   // Strip 'CAJA ' prefix — only store SUPERFICIAL or PROFUNDO
   const rawTipo = report.tipobache || report.tipoBache || '';

@@ -47,12 +47,21 @@ export default function App() {
     }
   }
 
-  // Check pending corrections periodically
+  // Check pending corrections periodically and on custom sync events
   useEffect(() => {
     if (!user) return
     fetchPendingCorrections()
-    const interval = setInterval(fetchPendingCorrections, 15000)
-    return () => clearInterval(interval)
+    const interval = setInterval(fetchPendingCorrections, 4000)
+    
+    const handleSync = () => {
+      fetchPendingCorrections()
+    }
+    window.addEventListener('sp-regis-corrections-updated', handleSync)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('sp-regis-corrections-updated', handleSync)
+    }
   }, [user])
 
   // Initialize sync & pending count only when authenticated

@@ -153,6 +153,15 @@ export default function LogScreen({
 
   useEffect(() => {
     fetchReportsAndCorrections()
+    const pollTimer = setInterval(fetchReportsAndCorrections, 5000)
+    const handleSync = () => {
+      fetchReportsAndCorrections()
+    }
+    window.addEventListener('sp-regis-corrections-updated', handleSync)
+    return () => {
+      clearInterval(pollTimer)
+      window.removeEventListener('sp-regis-corrections-updated', handleSync)
+    }
   }, [])
 
   // Filtered reports calculation
@@ -330,6 +339,7 @@ function DossierView({
       if (res.ok) {
         alert('✅ Solicitud de corrección enviada. El administrador revisará los cambios.');
         setShowCorrectionModal(false);
+        window.dispatchEvent(new Event('sp-regis-corrections-updated'));
         onRefreshNeeded();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -351,6 +361,7 @@ function DossierView({
 
       if (res.ok) {
         alert('✅ ¡Corrección aprobada con éxito! Los datos se actualizaron en Google Sheets.');
+        window.dispatchEvent(new Event('sp-regis-corrections-updated'));
         onReportUpdated({
           ...report,
           ...prop
@@ -376,6 +387,7 @@ function DossierView({
       if (res.ok) {
         alert('Solicitud de corrección descartada sin alterar la base de datos.');
         setShowDiscardConfirm(false);
+        window.dispatchEvent(new Event('sp-regis-corrections-updated'));
         onRefreshNeeded();
       } else {
         const err = await res.json().catch(() => ({}));
