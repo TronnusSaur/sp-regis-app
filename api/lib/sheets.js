@@ -162,6 +162,33 @@ export async function appendReportToSheet(sheetId, report) {
   }
 }
 
+export function excelSerialToDate(val) {
+  if (!val) return '';
+  const str = String(val).trim();
+  
+  // If it's a numeric serial like "46253.43" or 48252.58214
+  const num = parseFloat(str);
+  if (!isNaN(num) && num > 30000 && num < 70000 && /^\d+(\.\d+)?$/.test(str)) {
+    // Excel base date: Dec 30 1899
+    // Difference between Excel epoch and Unix epoch: 25569 days
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const utcMs = (num - 25569) * msPerDay;
+    const date = new Date(utcMs);
+    if (!isNaN(date.getTime())) {
+      return date.toLocaleString('es-MX', {
+        timeZone: 'America/Mexico_City',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+  }
+
+  return str;
+}
+
 export async function updateReportInSheet(sheetId, folio, updates) {
   try {
     const auth = await getGoogleClient();
@@ -169,9 +196,10 @@ export async function updateReportInSheet(sheetId, folio, updates) {
 
     logSheets(`Attempting update for folio ${folio}`, { updates });
 
+    // 1. Read existing rows to get current values and row index
     const readRes = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: 'Hoja 1!A:A',
+      range: 'Hoja 1!A:T',
     });
 
     const rows = readRes.data.values || [];
@@ -188,6 +216,7 @@ export async function updateReportInSheet(sheetId, folio, updates) {
     }
 
     const sheetRow = rowIndex + 1;
+    const existingRow = rows[rowIndex] || [];
 
     const { 
       largo, ancho, profundidad, m2, status, usuario,
@@ -204,21 +233,43 @@ export async function updateReportInSheet(sheetId, folio, updates) {
 
     const batchData = [];
 
-    const finalLocationDesc = locationDesc || locationdesc;
+    const finalLocationDesc = locationDesc !== undefined ? locationDesc : locationdesc;
     if (finalLocationDesc !== undefined) batchData.push({ range: `Hoja 1!E${sheetRow}`, values: [[finalLocationDesc]] });
     if (delegacion !== undefined) batchData.push({ range: `Hoja 1!F${sheetRow}`, values: [[delegacion]] });
     if (colonia !== undefined) batchData.push({ range: `Hoja 1!G${sheetRow}`, values: [[colonia]] });
     if (lat !== undefined && lng !== undefined) batchData.push({ range: `Hoja 1!H${sheetRow}`, values: [[`${lat}, ${lng}`]] });
 
-    if (measurementsExist(largo, ancho, profundidad)) {
-      const finalLargo = largo !== undefined ? largo : '';
-      const finalAncho = ancho !== undefined ? ancho : '';
-      const finalProf = profundidad !== undefined ? profundidad : '';
-      const finalM2 = m2 !== undefined ? m2 : ((parseFloat(finalLargo) || 0) * (parseFloat(finalAncho) || 0));
-      batchData.push({
-        range: `Hoja 1!I${sheetRow}:L${sheetRow}`,
-        values: [[finalLargo, finalAncho, finalProf, finalM2]]
-      });
+    // Existing measurements in the sheet to prevent wiping Largo/Ancho when updating Profundidad
+    const existingLargo = parseFloat(existingRow[8] || '0') || 0;
+    const existingAncho = parseFloat(existingRow[9] || '0') || 0;
+    const existingProf = parseFloat(existingRow[10] || '0') || 0;
+
+    let hasMeasurementChange = false;
+    let newLargo = existingLargo;
+    let newAncho = existingAncho;
+    let newProf = existingProf;
+
+    if (largo !== undefined && largo !== '') {
+      newLargo = parseFloat(largo) || 0;
+      hasMeasurementChange = true;
+      batchData.push({ range: `Hoja 1!I${sheetRow}`, values: [[newLargo]] });
+    }
+    if (ancho !== undefined && ancho !== '') {
+      newAncho = parseFloat(ancho) || 0;
+      hasMeasurementChange = true;
+      batchData.push({ range: `Hoja 1!J${sheetRow}`, values: [[newAncho]] });
+    }
+    if (profundidad !== undefined && profundidad !== '') {
+      newProf = parseFloat(profundidad) || 0;
+      hasMeasurementChange = true;
+      batchData.push({ range: `Hoja 1!K${sheetRow}`, values: [[newProf]] });
+    }
+
+    if (m2 !== undefined && m2 !== '') {
+      batchData.push({ range: `Hoja 1!L${sheetRow}`, values: [[parseFloat(m2) || 0]] });
+    } else if (hasMeasurementChange) {
+      const calculatedM2 = Number((newLargo * newAncho).toFixed(3));
+      batchData.push({ range: `Hoja 1!L${sheetRow}`, values: [[calculatedM2]] });
     }
 
     if (tipoBache) batchData.push({ range: `Hoja 1!M${sheetRow}`, values: [[tipoBache]] });
@@ -233,7 +284,10 @@ export async function updateReportInSheet(sheetId, folio, updates) {
     const finalCalle2 = calle_2 !== undefined ? calle_2 : calle2;
     if (finalCalle2 !== undefined) batchData.push({ range: `Hoja 1!S${sheetRow}`, values: [[finalCalle2]] });
 
-    if (usuario) batchData.push({ range: `Hoja 1!T${sheetRow}`, values: [[usuario]] });
+    // Only update Responsable (Column T) if explicitly provided and not an admin approval tag
+    if (usuario && !usuario.startsWith('Aprobado:')) {
+      batchData.push({ range: `Hoja 1!T${sheetRow}`, values: [[usuario]] });
+    }
 
     if (batchData.length === 0) {
       logSheets(`No updates to apply for ${folio}`);
@@ -308,6 +362,8 @@ export async function getAllReportsFromSheet(sheetId) {
     const readRes = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
       range: 'Hoja 1!A:T',
+      valueRenderOption: 'FORMATTED_VALUE',
+      dateTimeRenderOption: 'FORMATTED_STRING',
     });
 
     const rows = readRes.data.values || [];
@@ -321,10 +377,13 @@ export async function getAllReportsFromSheet(sheetId) {
       const lat = coords[0] && !isNaN(coords[0]) ? coords[0] : 0;
       const lng = coords[1] && !isNaN(coords[1]) ? coords[1] : 0;
 
+      const rawFecha = r[1] || '';
+      const formattedFecha = excelSerialToDate(rawFecha);
+
       return {
         id: idx + 1,
         folio: r[0] || '',
-        created_at: r[1] || '',
+        created_at: formattedFecha,
         contractId: r[2] || '',
         contractid: r[2] || '',
         empresaName: r[3] || '',
@@ -360,9 +419,5 @@ export async function getAllReportsFromSheet(sheetId) {
     console.error('[SHEETS ERROR] getAllReportsFromSheet failed:', err.message);
     return [];
   }
-}
-
-function measurementsExist(l, a, p) {
-  return l !== undefined || a !== undefined || p !== undefined;
 }
 

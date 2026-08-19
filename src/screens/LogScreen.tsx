@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { Preferences } from '@capacitor/preferences'
 import { apiFetch } from '../lib/apiFetch'
+import { formatDisplayDate } from '../lib/dateUtils'
 import './LogScreen.css'
 
 export interface Report {
@@ -456,7 +457,7 @@ function DossierView({
         <div className="dossier-meta">
           <div className="flex items-center gap-2">
             <Calendar size={14} className="text-cyan-600" />
-            <span>Capturado el {report.created_at || 'Fecha no disponible'}</span>
+            <span>Capturado el {formatDisplayDate(report.created_at)}</span>
           </div>
           <div className="flex items-center gap-2">
             <User size={14} className="text-cyan-600" />
@@ -1078,7 +1079,7 @@ function ListView({
                   <div>
                     <span className="folio-tag">Folio {report.folio}</span>
                     <p className="text-[10px] font-bold text-slate-400">
-                      {report.created_at ? report.created_at.split(',')[0] : 'Fecha rec.'}
+                      {formatDisplayDate(report.created_at)}
                     </p>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>

@@ -504,8 +504,7 @@ app.post('/api/corrections/:id/approve', requireAuth, async (req, res) => {
     if (sheetId && correction.proposedData) {
       console.log(`[CORRECTION APPROVE] Aplicando cambios en Google Sheets para folio ${correction.folio}...`);
       await updateReportInSheet(sheetId, correction.folio, {
-        ...correction.proposedData,
-        usuario: `Aprobado: ${req.user.email}`
+        ...correction.proposedData
       });
     }
 
@@ -514,8 +513,7 @@ app.post('/api/corrections/:id/approve', requireAuth, async (req, res) => {
     if (cachedIdx !== -1) {
       reportsCache[cachedIdx] = {
         ...reportsCache[cachedIdx],
-        ...correction.proposedData,
-        updated_by: req.user.email
+        ...correction.proposedData
       };
     }
 
