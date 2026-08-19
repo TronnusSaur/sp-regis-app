@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react'
-import { RefreshCcw, MapPin, ChevronLeft, Search, Calendar, User, ExternalLink, Ruler, Image as ImageIcon, X, Maximize2, Layers } from 'lucide-react'
+import { 
+  RefreshCcw, MapPin, ChevronLeft, Search, Calendar, User, 
+  ExternalLink, Ruler, Image as ImageIcon, X, Maximize2, Layers, 
+  AlertTriangle, CheckCircle2, Trash2, Edit3, Loader 
+} from 'lucide-react'
 import { Preferences } from '@capacitor/preferences'
 import { apiFetch } from '../lib/apiFetch'
 import './LogScreen.css'
@@ -40,9 +44,27 @@ interface Report {
   isOffline?: boolean;
 }
 
+interface CorrectionRequest {
+  id: string;
+  folio: string;
+  requestedBy: string;
+  requestedAt: string;
+  status: string;
+  originalData: any;
+  proposedData: any;
+  reason?: string;
+}
+
+interface LogScreenProps {
+  userProfile?: any;
+  initialFilter?: 'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO' | 'CORRECCION';
+  onFilterHandled?: () => void;
+  onCorrectionsChanged?: () => void;
+}
+
 /**
  * Transforms Google Drive webViewLink or Drive file IDs into direct image URLs
- * accessible by HTML <img> tags without CORS or HTML webpage wrapper blocks.
+ * accessible by HTML <img> tags without CORS blocks.
  */
 function formatDriveImageUrl(rawUrl: string | null | undefined): string | null {
   if (!rawUrl) return null;
@@ -62,22 +84,57 @@ function formatDriveImageUrl(rawUrl: string | null | undefined): string | null {
   return url;
 }
 
-export default function LogScreen({ userProfile }: { userProfile?: any }) {
+export default function LogScreen({ 
+  userProfile, 
+  initialFilter, 
+  onFilterHandled, 
+  onCorrectionsChanged 
+}: LogScreenProps) {
   const [reports, setReports] = useState<Report[]>([])
+  const [corrections, setCorrections] = useState<CorrectionRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
   
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO'>('ALL')
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO' | 'CORRECCION'>('ALL')
   
   // Dossier view states
   const [activePhotoTab, setActivePhotoTab] = useState<'inicial' | 'caja' | 'final'>('inicial')
   const [lightboxImage, setLightboxImage] = useState<string | null>(null)
 
-  const fetchReports = async () => {
+  // Correction Action States
+  const [showCorrectionModal, setShowCorrectionModal] = useState(false)
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+  const [isActionLoading, setIsActionLoading] = useState(false)
+
+  // Correction Request Form State
+  const [selectedFields, setSelectedFields] = useState<Record<string, boolean>>({
+    locationDesc: false,
+    calle1: false,
+    calle2: false,
+    delegacion: false,
+    colonia: false,
+    largo: false,
+    ancho: false,
+    profundidad: false
+  })
+  const [correctionForm, setCorrectionForm] = useState<Record<string, any>>({})
+  const [correctionReason, setCorrectionReason] = useState('')
+
+  const isAdmin = userProfile?.email?.toLowerCase() === 'juanpablobumblebee@gmail.com';
+
+  useEffect(() => {
+    if (initialFilter) {
+      setStatusFilter(initialFilter);
+      onFilterHandled?.();
+    }
+  }, [initialFilter]);
+
+  const fetchReportsAndCorrections = async () => {
     setLoading(true)
     try {
+      // 1. Fetch Reports
       let apiReports: Report[] = []
       try {
         const response = await apiFetch('/api/reports')
@@ -98,20 +155,38 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
         }
       }
       setReports(apiReports)
+
+      // 2. Fetch Corrections
+      try {
+        const corrRes = await apiFetch('/api/corrections')
+        if (corrRes.ok) {
+          const corrJson = await corrRes.json()
+          setCorrections(Array.isArray(corrJson) ? corrJson : [])
+        }
+      } catch (e) {
+        console.warn('[CORRECTIONS] Error cargando correcciones:', e)
+      }
     } catch (err) {
-      console.error('[SYNC ERROR] No se pudieron cargar los reportes.')
+      console.error('[SYNC ERROR] No se pudieron cargar los datos.')
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    fetchReports()
+    fetchReportsAndCorrections()
   }, [])
 
   // Filtered reports calculation
   const filteredReports = reports.filter(r => {
-    if (statusFilter !== 'ALL' && r.status !== statusFilter) return false;
+    const rFolio = String(r.folio || '').trim();
+    const hasCorrection = corrections.some(c => String(c.folio).trim() === rFolio);
+
+    if (statusFilter === 'CORRECCION') {
+      if (!hasCorrection) return false;
+    } else if (statusFilter !== 'ALL') {
+      if (r.status !== statusFilter) return false;
+    }
 
     if (searchQuery.trim() !== '') {
       const q = searchQuery.toLowerCase().trim();
@@ -125,7 +200,7 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
     return true;
   });
 
-  // Photo URLs extractor with Drive URL Formatter
+  // Photo URLs extractor
   const getPhotoForPhase = (report: Report, phase: 'inicial' | 'caja' | 'final'): string | null => {
     let raw: string | null = null;
     if (phase === 'inicial') raw = report.photourl || report.photoUrl || null;
@@ -134,17 +209,157 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
     return formatDriveImageUrl(raw);
   }
 
+  // Open correction modal initialized with report's current values
+  const openCorrectionModal = (report: Report) => {
+    setCorrectionForm({
+      locationDesc: report.locationdesc || report.locationDesc || '',
+      calle1: report.calle_1 || report.calle1 || '',
+      calle2: report.calle_2 || report.calle2 || '',
+      delegacion: report.delegacion || 'TOLUCA',
+      colonia: report.colonia || 'CENTRO',
+      largo: report.largo || '',
+      ancho: report.ancho || '',
+      profundidad: report.profundidad || ''
+    })
+    setSelectedFields({
+      locationDesc: false,
+      calle1: false,
+      calle2: false,
+      delegacion: false,
+      colonia: false,
+      largo: false,
+      ancho: false,
+      profundidad: false
+    })
+    setCorrectionReason('')
+    setShowCorrectionModal(true)
+  }
+
+  // Submit correction request
+  const handleSubmitCorrection = async () => {
+    if (!selectedReport) return;
+    
+    // Build proposedData from selected fields
+    const proposedData: Record<string, any> = {};
+    const originalData: Record<string, any> = {};
+
+    Object.keys(selectedFields).forEach(k => {
+      if (selectedFields[k]) {
+        proposedData[k] = correctionForm[k];
+        originalData[k] = (selectedReport as any)[k] || '';
+      }
+    });
+
+    if (Object.keys(proposedData).length === 0) {
+      alert('Por favor selecciona al menos un campo para corregir.');
+      return;
+    }
+
+    // Auto-recalculate depth category if depth was modified
+    if (proposedData.profundidad !== undefined) {
+      const profNum = parseFloat(proposedData.profundidad) || 0;
+      proposedData.tipoBache = profNum > 0.07 ? 'PROFUNDO' : 'SUPERFICIAL';
+    }
+
+    setIsActionLoading(true)
+    try {
+      const res = await apiFetch('/api/corrections', {
+        method: 'POST',
+        body: JSON.stringify({
+          folio: selectedReport.folio,
+          originalData,
+          proposedData,
+          reason: correctionReason
+        })
+      });
+
+      if (res.ok) {
+        alert('✅ Solicitud de corrección enviada. El administrador revisará los cambios.');
+        setShowCorrectionModal(false);
+        fetchReportsAndCorrections();
+        onCorrectionsChanged?.();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Error: ${err.error || 'No se pudo enviar la solicitud'}`);
+      }
+    } catch (e: any) {
+      alert(`Error de red: ${e.message}`);
+    } finally {
+      setIsActionLoading(false);
+    }
+  }
+
+  // Approve correction (Admin only)
+  const handleApproveCorrection = async (correctionId: string) => {
+    setIsActionLoading(true);
+    try {
+      const res = await apiFetch(`/api/corrections/${correctionId}/approve`, {
+        method: 'POST'
+      });
+
+      if (res.ok) {
+        alert('✅ ¡Corrección aprobada con éxito! Los datos se actualizaron en Google Sheets.');
+        fetchReportsAndCorrections();
+        onCorrectionsChanged?.();
+        // Update selectedReport view in place
+        const currCorr = corrections.find(c => c.id === correctionId);
+        if (currCorr && selectedReport) {
+          setSelectedReport({
+            ...selectedReport,
+            ...currCorr.proposedData
+          });
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Error al aprobar: ${err.error || 'Fallo del servidor'}`);
+      }
+    } catch (e: any) {
+      alert(`Error de red: ${e.message}`);
+    } finally {
+      setIsActionLoading(false);
+    }
+  }
+
+  // Discard correction (Admin only)
+  const handleDiscardCorrection = async (correctionId: string) => {
+    setIsActionLoading(true);
+    try {
+      const res = await apiFetch(`/api/corrections/${correctionId}/discard`, {
+        method: 'POST'
+      });
+
+      if (res.ok) {
+        alert('Solicitud de corrección descartada sin alterar la base de datos.');
+        setShowDiscardConfirm(false);
+        fetchReportsAndCorrections();
+        onCorrectionsChanged?.();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Error al descartar: ${err.error || 'Fallo del servidor'}`);
+      }
+    } catch (e: any) {
+      alert(`Error de red: ${e.message}`);
+    } finally {
+      setIsActionLoading(false);
+    }
+  }
+
   // --- DOSSIER DETAIL VIEW ---
   if (selectedReport) {
     const photoInicial = getPhotoForPhase(selectedReport, 'inicial');
     const photoCaja = getPhotoForPhase(selectedReport, 'caja');
     const photoFinal = getPhotoForPhase(selectedReport, 'final');
-
     const activePhotoUrl = getPhotoForPhase(selectedReport, activePhotoTab);
 
     const lat = selectedReport.lat || 0;
     const lng = selectedReport.lng || 0;
     const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+
+    const activeCorrection = corrections.find(
+      c => String(c.folio).trim() === String(selectedReport.folio).trim()
+    );
+
+    const prop = activeCorrection?.proposedData || {};
 
     return (
       <div className="log-container dossier-view">
@@ -156,6 +371,38 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           <ChevronLeft size={16} /> REGRESAR A BITÁCORA
         </button>
 
+        {/* Pending Correction Alert Banner (if exists) */}
+        {activeCorrection && (
+          <div style={{
+            background: '#fffbeb',
+            border: '2px solid #f59e0b',
+            borderRadius: '16px',
+            padding: '0.85rem 1rem',
+            marginBottom: '1rem',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.75rem',
+            boxShadow: '0 4px 12px rgba(245, 158, 11, 0.15)'
+          }}>
+            <AlertTriangle size={20} color="#d97706" style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 900, color: '#b45309', textTransform: 'uppercase' }}>
+                  ⚠️ Solicitud de Corrección Pendiente
+                </span>
+                <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#92400e' }}>
+                  Por: {activeCorrection.requestedBy}
+                </span>
+              </div>
+              {activeCorrection.reason && (
+                <p style={{ fontSize: '0.75rem', color: '#78350f', margin: '0.25rem 0 0 0', fontWeight: 600 }}>
+                  Motivo: "{activeCorrection.reason}"
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Dossier Card 1: Main Header Info */}
         <div className="dossier-card">
           <div className="dossier-header">
@@ -163,9 +410,24 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
               <span className="text-[10px] font-black text-slate-400 tracking-wider uppercase block">EXPEDIENTE DIGITAL</span>
               <h2 className="dossier-folio">Folio {selectedReport.folio}</h2>
             </div>
-            <span className={`status-tag ${selectedReport.status === 'DETECTADO' ? 'status-detected' : (selectedReport.status === 'EN PROCESO' ? 'status-process' : 'status-finished')}`}>
-              {selectedReport.status}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              {activeCorrection && (
+                <span style={{
+                  fontSize: '0.65rem',
+                  fontWeight: 900,
+                  background: '#fef3c7',
+                  color: '#b45309',
+                  border: '1px solid #fcd34d',
+                  padding: '0.25rem 0.55rem',
+                  borderRadius: '9999px'
+                }}>
+                  CORRECCIÓN
+                </span>
+              )}
+              <span className={`status-tag ${selectedReport.status === 'DETECTADO' ? 'status-detected' : (selectedReport.status === 'EN PROCESO' ? 'status-process' : 'status-finished')}`}>
+                {selectedReport.status}
+              </span>
+            </div>
           </div>
 
           <div className="dossier-meta">
@@ -224,7 +486,6 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
                   className="photo-preview-img"
                   onClick={() => setLightboxImage(activePhotoUrl)}
                   onError={(e) => {
-                    // Fallback to Google Drive thumbnail endpoint if CDN fails
                     const target = e.currentTarget;
                     const fileIdMatch = activePhotoUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
                     if (fileIdMatch && fileIdMatch[1]) {
@@ -251,6 +512,18 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
             <Ruler size={14} className="text-cyan-600" /> Cuantificación y Ficha Técnica
           </h3>
 
+          {/* Diff Box if Measurements are proposed */}
+          {(prop.largo !== undefined || prop.ancho !== undefined || prop.profundidad !== undefined) && (
+            <div className="diff-blue-box">
+              <div className="diff-blue-header">
+                <span className="diff-blue-badge">NUEVAS MEDICIONES PROPUESTAS</span>
+              </div>
+              <div className="diff-blue-text">
+                Largo: {prop.largo ?? selectedReport.largo} m | Ancho: {prop.ancho ?? selectedReport.ancho} m | Prof: {prop.profundidad ?? selectedReport.profundidad} m
+              </div>
+            </div>
+          )}
+
           <div className="specs-grid">
             <div className="spec-item">
               <span className="spec-label">Largo</span>
@@ -270,8 +543,18 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
             </div>
           </div>
 
+          {/* Diff Box if TipoBache is proposed */}
+          {prop.tipoBache && (
+            <div className="diff-blue-box mt-3">
+              <div className="diff-blue-header">
+                <span className="diff-blue-badge">NUEVA CLASIFICACIÓN TÉCNICA</span>
+              </div>
+              <div className="diff-blue-text">{prop.tipoBache}</div>
+            </div>
+          )}
+
           <div className="mt-3 flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Clasificación Técnica</span>
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Clasificación Técnica (Actual)</span>
             <span className="text-xs font-black text-cyan-600 uppercase">
               {(selectedReport.profundidad || 0) > 0.07 ? 'PROFUNDO' : (selectedReport.tipoBache || selectedReport.tipobache || 'SUPERFICIAL')}
             </span>
@@ -283,6 +566,40 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           <h3 className="text-xs font-black uppercase text-slate-700 tracking-wider flex items-center gap-2">
             <MapPin size={14} className="text-cyan-600" /> Ubicación y Georreferenciación
           </h3>
+
+          {/* Diff Box for Delegacion/Colonia */}
+          {(prop.delegacion || prop.colonia) && (
+            <div className="diff-blue-box">
+              <div className="diff-blue-header">
+                <span className="diff-blue-badge">NUEVA ZONA PROPUESTA</span>
+              </div>
+              <div className="diff-blue-text">
+                {prop.delegacion || selectedReport.delegacion} — {prop.colonia || selectedReport.colonia}
+              </div>
+            </div>
+          )}
+
+          {/* Diff Box for LocationDesc */}
+          {prop.locationDesc && (
+            <div className="diff-blue-box">
+              <div className="diff-blue-header">
+                <span className="diff-blue-badge">NUEVA CALLE PRINCIPAL</span>
+              </div>
+              <div className="diff-blue-text">{prop.locationDesc}</div>
+            </div>
+          )}
+
+          {/* Diff Box for Entre Calles */}
+          {(prop.calle1 || prop.calle2 || prop.calle_1 || prop.calle_2) && (
+            <div className="diff-blue-box">
+              <div className="diff-blue-header">
+                <span className="diff-blue-badge">NUEVAS ENTRE CALLES</span>
+              </div>
+              <div className="diff-blue-text">
+                {prop.calle1 || prop.calle_1 || selectedReport.calle_1 || ''} Y {prop.calle2 || prop.calle_2 || selectedReport.calle_2 || ''}
+              </div>
+            </div>
+          )}
 
           {(() => {
             const c1 = selectedReport.calle_1 || selectedReport.calle1 || '';
@@ -328,6 +645,275 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           )}
         </div>
 
+        {/* ADMIN ACTION CONTROLS (Approve / Discard) */}
+        {isAdmin && activeCorrection && (
+          <div className="dossier-card" style={{ border: '2px solid #10b981', background: '#f0fdf4' }}>
+            <h3 className="text-xs font-black uppercase text-emerald-800 tracking-wider flex items-center gap-2 mb-2">
+              <CheckCircle2 size={16} className="text-emerald-600" /> Panel de Aprobación de Administrador
+            </h3>
+            <p className="text-xs text-emerald-700 font-medium mb-3">
+              Revisa los datos azules propuestos arriba. Al aprobar, se actualizarán directamente en Google Sheets.
+            </p>
+            <div className="admin-correction-actions" style={{ borderTop: 'none', marginTop: 0, paddingTop: 0 }}>
+              <button 
+                className="btn-approve-correction"
+                onClick={() => handleApproveCorrection(activeCorrection.id)}
+                disabled={isActionLoading}
+              >
+                {isActionLoading ? <Loader size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                APROBAR CAMBIOS EN BD
+              </button>
+              <button 
+                className="btn-discard-correction"
+                onClick={() => setShowDiscardConfirm(true)}
+                disabled={isActionLoading}
+                title="Descartar solicitud"
+              >
+                <Trash2 size={18} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* BUTTON TO REQUEST A NEW CORRECTION (FOR ALL USERS) */}
+        <button 
+          className="btn-request-correction"
+          onClick={() => openCorrectionModal(selectedReport)}
+        >
+          <Edit3 size={14} /> SOLICITAR CORRECCIÓN / REPORTAR ERROR DE CAPTURA
+        </button>
+
+        {/* Modal: Solicitar Corrección */}
+        {showCorrectionModal && (
+          <div className="correction-modal-overlay" onClick={() => setShowCorrectionModal(false)}>
+            <div className="correction-modal-card" onClick={e => e.stopPropagation()}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <div>
+                  <span style={{ fontSize: '0.62rem', fontWeight: 900, color: '#0284c7', textTransform: 'uppercase' }}>
+                    FOLIO {selectedReport.folio}
+                  </span>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 900, color: '#0f172a' }}>
+                    Reportar Corrección de Datos
+                  </h3>
+                </div>
+                <button 
+                  onClick={() => setShowCorrectionModal(false)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <p style={{ fontSize: '0.72rem', color: '#64748b', margin: '0 0 0.5rem 0', fontWeight: 600 }}>
+                Selecciona qué dato(s) tienen error para ingresar la información correcta:
+              </p>
+
+              {/* Selectable Field Chips */}
+              <div className="correction-chips-grid">
+                {[
+                  { key: 'locationDesc', label: 'Calle Principal' },
+                  { key: 'calle1', label: 'Entre Calle 1' },
+                  { key: 'calle2', label: 'Entre Calle 2' },
+                  { key: 'delegacion', label: 'Delegación' },
+                  { key: 'colonia', label: 'Colonia' },
+                  { key: 'largo', label: 'Largo' },
+                  { key: 'ancho', label: 'Ancho' },
+                  { key: 'profundidad', label: 'Profundidad' }
+                ].map(f => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    className={`correction-chip ${selectedFields[f.key] ? 'selected' : ''}`}
+                    onClick={() => setSelectedFields(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                  >
+                    {selectedFields[f.key] ? '✓ ' : '+ '}{f.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Dynamic Inputs for Checked Fields */}
+              <div style={{ marginTop: '0.5rem' }}>
+                {selectedFields.locationDesc && (
+                  <div className="correction-input-group">
+                    <label className="correction-input-label">Calle Principal / Ubicación Correcta</label>
+                    <input 
+                      className="correction-input-field" 
+                      value={correctionForm.locationDesc || ''} 
+                      onChange={e => setCorrectionForm(p => ({ ...p, locationDesc: e.target.value.toUpperCase() }))} 
+                      placeholder="ESCRIBE LA CALLE CORRECTA..."
+                    />
+                  </div>
+                )}
+
+                {selectedFields.calle1 && (
+                  <div className="correction-input-group">
+                    <label className="correction-input-label">Entre Calle 1 Correcta</label>
+                    <input 
+                      className="correction-input-field" 
+                      value={correctionForm.calle1 || ''} 
+                      onChange={e => setCorrectionForm(p => ({ ...p, calle1: e.target.value.toUpperCase() }))} 
+                      placeholder="CALLE 1..."
+                    />
+                  </div>
+                )}
+
+                {selectedFields.calle2 && (
+                  <div className="correction-input-group">
+                    <label className="correction-input-label">Entre Calle 2 Correcta</label>
+                    <input 
+                      className="correction-input-field" 
+                      value={correctionForm.calle2 || ''} 
+                      onChange={e => setCorrectionForm(p => ({ ...p, calle2: e.target.value.toUpperCase() }))} 
+                      placeholder="CALLE 2..."
+                    />
+                  </div>
+                )}
+
+                {selectedFields.delegacion && (
+                  <div className="correction-input-group">
+                    <label className="correction-input-label">Delegación Correcta</label>
+                    <input 
+                      className="correction-input-field" 
+                      value={correctionForm.delegacion || ''} 
+                      onChange={e => setCorrectionForm(p => ({ ...p, delegacion: e.target.value.toUpperCase() }))} 
+                    />
+                  </div>
+                )}
+
+                {selectedFields.colonia && (
+                  <div className="correction-input-group">
+                    <label className="correction-input-label">Colonia Correcta</label>
+                    <input 
+                      className="correction-input-field" 
+                      value={correctionForm.colonia || ''} 
+                      onChange={e => setCorrectionForm(p => ({ ...p, colonia: e.target.value.toUpperCase() }))} 
+                    />
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+                  {selectedFields.largo && (
+                    <div className="correction-input-group">
+                      <label className="correction-input-label">Largo (m)</label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        className="correction-input-field" 
+                        value={correctionForm.largo || ''} 
+                        onChange={e => setCorrectionForm(p => ({ ...p, largo: e.target.value }))} 
+                      />
+                    </div>
+                  )}
+                  {selectedFields.ancho && (
+                    <div className="correction-input-group">
+                      <label className="correction-input-label">Ancho (m)</label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        className="correction-input-field" 
+                        value={correctionForm.ancho || ''} 
+                        onChange={e => setCorrectionForm(p => ({ ...p, ancho: e.target.value }))} 
+                      />
+                    </div>
+                  )}
+                  {selectedFields.profundidad && (
+                    <div className="correction-input-group">
+                      <label className="correction-input-label">Prof. (m)</label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        className="correction-input-field" 
+                        value={correctionForm.profundidad || ''} 
+                        onChange={e => setCorrectionForm(p => ({ ...p, profundidad: e.target.value }))} 
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="correction-input-group" style={{ marginTop: '0.5rem' }}>
+                  <label className="correction-input-label">Motivo o Razón del Cambio (Opcional)</label>
+                  <textarea 
+                    className="correction-input-field" 
+                    rows={2} 
+                    value={correctionReason} 
+                    onChange={e => setCorrectionReason(e.target.value)} 
+                    placeholder="Ej. Error de dedo en nombre de calle..."
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+                <button 
+                  type="button" 
+                  onClick={() => setShowCorrectionModal(false)}
+                  style={{
+                    flex: 1,
+                    padding: '0.8rem',
+                    borderRadius: '12px',
+                    border: '1px solid #cbd5e1',
+                    background: '#f8fafc',
+                    color: '#64748b',
+                    fontWeight: 800,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="button" 
+                  onClick={handleSubmitCorrection}
+                  disabled={isActionLoading}
+                  style={{
+                    flex: 2,
+                    padding: '0.8rem',
+                    borderRadius: '12px',
+                    border: 'none',
+                    background: '#0284c7',
+                    color: 'white',
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 12px rgba(2, 132, 199, 0.3)'
+                  }}
+                >
+                  {isActionLoading ? 'Enviando...' : 'ENVIAR CORRECCIÓN'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Confirmación de Descarte */}
+        {showDiscardConfirm && activeCorrection && (
+          <div className="correction-modal-overlay" onClick={() => setShowDiscardConfirm(false)}>
+            <div className="correction-modal-card" style={{ maxWidth: '400px', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+              <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#fee2e2', color: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem auto' }}>
+                <Trash2 size={24} />
+              </div>
+              <h3 style={{ margin: '0 0 0.5rem 0', fontWeight: 900, color: '#0f172a' }}>
+                ¿Descartar Solicitud?
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '0 0 1.25rem 0' }}>
+                Se eliminará la solicitud de cambio y la base de datos no será alterada.
+              </p>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button 
+                  onClick={() => setShowDiscardConfirm(false)}
+                  style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: '1px solid #cbd5e1', background: '#f8fafc', color: '#475569', fontWeight: 800, cursor: 'pointer' }}
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={() => handleDiscardCorrection(activeCorrection.id)}
+                  disabled={isActionLoading}
+                  style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: 'none', background: '#ef4444', color: 'white', fontWeight: 900, cursor: 'pointer' }}
+                >
+                  {isActionLoading ? 'Eliminando...' : 'Sí, Descartar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Lightbox Fullscreen Modal */}
         {lightboxImage && (
           <div className="lightbox-overlay" onClick={() => setLightboxImage(null)}>
@@ -351,7 +937,7 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           <p className="subtitle-main">Consultor de Folios en Vivo</p>
         </div>
         <button 
-          onClick={fetchReports} 
+          onClick={fetchReportsAndCorrections} 
           className="p-2 bg-slate-100 text-cyan-600 rounded-xl hover:bg-slate-200 transition" 
           title="Actualizar datos"
         >
@@ -365,7 +951,7 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           <Search size={16} className="search-icon" />
           <input 
             type="text" 
-            className="search-input"
+            className="search-input" 
             placeholder="Buscar por folio, calle o colonia..." 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -406,6 +992,13 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
           >
             Detectados ({reports.filter(r => r.status === 'DETECTADO').length})
           </button>
+          <button 
+            className={`filter-pill ${statusFilter === 'CORRECCION' ? 'active' : ''}`}
+            onClick={() => setStatusFilter('CORRECCION')}
+            style={corrections.length > 0 ? { borderColor: '#f59e0b', color: statusFilter === 'CORRECCION' ? 'white' : '#b45309' } : {}}
+          >
+            ⚠️ Corrección ({corrections.length})
+          </button>
         </div>
       </div>
 
@@ -417,7 +1010,7 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
       ) : filteredReports.length === 0 ? (
         <div className="py-12 px-6 bg-slate-50 border-2 border-dashed border-slate-200 rounded-3xl text-center">
           <p className="text-slate-400 font-bold text-xs uppercase tracking-wider">
-            {searchQuery ? 'No se encontraron folios con el criterio de búsqueda' : 'No hay expedientes registrados'}
+            {searchQuery ? 'No se encontraron folios con el criterio de búsqueda' : 'No hay expedientes en esta categoría'}
           </p>
         </div>
       ) : (
@@ -426,12 +1019,14 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
             const photoInicial = getPhotoForPhase(report, 'inicial');
             const photoCaja = getPhotoForPhase(report, 'caja');
             const photoFinal = getPhotoForPhase(report, 'final');
+            const hasPendingCorr = corrections.some(c => String(c.folio).trim() === String(report.folio).trim());
 
             return (
               <div 
                 key={report.folio} 
                 className="report-card"
                 onClick={() => setSelectedReport(report)}
+                style={hasPendingCorr ? { border: '1.5px solid #fcd34d', background: '#fffef9' } : {}}
               >
                 <div className="card-top">
                   <div>
@@ -440,9 +1035,24 @@ export default function LogScreen({ userProfile }: { userProfile?: any }) {
                       {report.created_at ? report.created_at.split(',')[0] : 'Fecha rec.'}
                     </p>
                   </div>
-                  <span className={`status-tag ${report.status === 'DETECTADO' ? 'status-detected' : (report.status === 'EN PROCESO' ? 'status-process' : 'status-finished')}`}>
-                    {report.status}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    {hasPendingCorr && (
+                      <span style={{
+                        fontSize: '0.58rem',
+                        fontWeight: 900,
+                        background: '#fef3c7',
+                        color: '#b45309',
+                        border: '1px solid #fcd34d',
+                        padding: '0.2rem 0.45rem',
+                        borderRadius: '9999px'
+                      }}>
+                        ⚠️ CORRECCIÓN
+                      </span>
+                    )}
+                    <span className={`status-tag ${report.status === 'DETECTADO' ? 'status-detected' : (report.status === 'EN PROCESO' ? 'status-process' : 'status-finished')}`}>
+                      {report.status}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="card-body">

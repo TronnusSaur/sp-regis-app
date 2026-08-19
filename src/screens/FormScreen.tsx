@@ -41,11 +41,33 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
   })
 
   const [lastRegisteredFolio, setLastRegisteredFolio] = useState<string>('');
+  const [autoFolio, setAutoFolio] = useState<string>('5000001');
+  const [isLoadingNextFolio, setIsLoadingNextFolio] = useState<boolean>(true);
 
   const [isUploading, setIsUploading] = useState(false)
   const [isRadarLoading, setIsRadarLoading] = useState(false)
   const [showSuccessModal, setShowSuccessModal] = useState(false)
-  const [folioSuffix, setFolioSuffix] = useState('')
+
+  const fetchNextFolio = async () => {
+    setIsLoadingNextFolio(true);
+    try {
+      const res = await apiFetch('/api/reports/next-folio');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.nextFolio) {
+          setAutoFolio(data.nextFolio);
+        }
+      }
+    } catch (err) {
+      console.warn('[FOLIO AUTO] No se pudo obtener siguiente folio:', err);
+    } finally {
+      setIsLoadingNextFolio(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchNextFolio();
+  }, []);
 
   const fileInputRefInicial = useRef<HTMLInputElement>(null)
   const fileInputRefCaja = useRef<HTMLInputElement>(null)
@@ -142,20 +164,16 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (folioSuffix.length !== 5) {
-      alert('El folio debe contener exactamente 5 dígitos después del prefijo 50.');
-      return;
-    }
     if (!photos.inicial.file && !photos.caja.file && !photos.final.file) {
       alert('Por favor selecciona al menos una fotografía.');
       return;
     }
 
     setIsUploading(true)
-    const folio = `50${folioSuffix}`;
+    const folioToSubmit = autoFolio;
 
     const submission = new FormData();
-    submission.append('folio', folio);
+    submission.append('folio', folioToSubmit);
     submission.append('contractId', 'SP-TOLUCA');
     submission.append('empresaName', 'Servicios Públicos Toluca');
     submission.append('lat', formData.lat.toString());
@@ -198,9 +216,12 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
       });
 
       if (response.ok) {
-        setLastRegisteredFolio(folio);
+        const json = await response.json().catch(() => ({}));
+        const registered = json.folio || folioToSubmit;
+        setLastRegisteredFolio(registered);
         setShowSuccessModal(true);
         resetForm();
+        fetchNextFolio();
       } else {
         const errJson = await response.json().catch(() => ({}));
         alert(`Error al guardar: ${errJson.error || 'Fallo del servidor'}`);
@@ -232,7 +253,6 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
       lng: 0,
       tipoBache: 'SUPERFICIAL'
     });
-    setFolioSuffix('');
   }
 
   return (
@@ -281,22 +301,19 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
           </div>
         </div>
 
-        {/* 2. FOLIO DE 50 + 5 DÍGITOS */}
+        {/* 2. FOLIO AUTOGENERADO AUTOMÁTICO */}
         <div className="input-group">
-          <label className="field-label">Folio del Bache (Prefijo 50 + 5 dígitos: 50XXXXX)*</label>
-          <div className="folio-input-row">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+            <label className="field-label" style={{ marginBottom: 0 }}>Folio del Bache (Autogenerado Consecutivo)*</label>
+            <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#0891b2', background: '#ecfeff', padding: '0.2rem 0.5rem', borderRadius: '9999px', border: '1px solid #cffafe' }}>
+              🔒 AUTO-ASIGNADO
+            </span>
+          </div>
+          <div className="folio-input-row" style={{ opacity: 0.95 }}>
             <span className="folio-prefix">50</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]{5}"
-              maxLength={5}
-              className="folio-suffix-input"
-              placeholder="00001"
-              value={folioSuffix}
-              onChange={e => setFolioSuffix(e.target.value.replace(/\D/g, '').slice(0, 5))}
-              required
-            />
+            <div className="folio-suffix-locked">
+              {isLoadingNextFolio ? '...' : autoFolio.slice(2)}
+            </div>
           </div>
         </div>
 
@@ -431,14 +448,14 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
           <button 
             type="submit" 
             className="btn-submit-full" 
-            disabled={isUploading || folioSuffix.length !== 5 || (!photos.inicial.file && !photos.caja.file && !photos.final.file)}
+            disabled={isUploading || isLoadingNextFolio || (!photos.inicial.file && !photos.caja.file && !photos.final.file)}
           >
             {isUploading ? (
               <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
                 <Loader size={16} className="spin-icon" />
                 REGISTRANDO FOLIO EN SP REGIS...
               </span>
-            ) : `REGISTRAR FOLIO ${folioSuffix.length === 5 ? `50${folioSuffix}` : '50XXXXX'}`}
+            ) : `REGISTRAR FOLIO ${autoFolio}`}
           </button>
         </div>
       </form>

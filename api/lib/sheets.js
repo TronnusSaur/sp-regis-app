@@ -189,29 +189,50 @@ export async function updateReportInSheet(sheetId, folio, updates) {
 
     const sheetRow = rowIndex + 1;
 
-    // Columna N: status, O: photoUrl, P: photoCaja, Q: photoFinal, M: tipoBache, I-L: measurements, T: Responsable
-    const { largo, ancho, profundidad, m2, status, usuario } = updates;
+    const { 
+      largo, ancho, profundidad, m2, status, usuario,
+      locationDesc, locationdesc, delegacion, colonia,
+      calle_1, calle1, calle_2, calle2, lat, lng
+    } = updates;
     const photoUrl = updates.photoUrl || updates.photourl;
     const photoCaja = updates.photocaja || updates.photoCaja;
     const photoFinal = updates.photofinal || updates.photoFinal;
+    
     // Normalize and strip 'CAJA ' from tipoBache
     const rawTipo = updates.tipobache || updates.tipoBache || '';
-    const tipoBache = rawTipo.replace(/^CAJA\s+/i, '').trim() || null;
+    const tipoBache = rawTipo ? rawTipo.replace(/^CAJA\s+/i, '').trim() : null;
 
     const batchData = [];
 
+    const finalLocationDesc = locationDesc || locationdesc;
+    if (finalLocationDesc !== undefined) batchData.push({ range: `Hoja 1!E${sheetRow}`, values: [[finalLocationDesc]] });
+    if (delegacion !== undefined) batchData.push({ range: `Hoja 1!F${sheetRow}`, values: [[delegacion]] });
+    if (colonia !== undefined) batchData.push({ range: `Hoja 1!G${sheetRow}`, values: [[colonia]] });
+    if (lat !== undefined && lng !== undefined) batchData.push({ range: `Hoja 1!H${sheetRow}`, values: [[`${lat}, ${lng}`]] });
+
     if (measurementsExist(largo, ancho, profundidad)) {
+      const finalLargo = largo !== undefined ? largo : '';
+      const finalAncho = ancho !== undefined ? ancho : '';
+      const finalProf = profundidad !== undefined ? profundidad : '';
+      const finalM2 = m2 !== undefined ? m2 : ((parseFloat(finalLargo) || 0) * (parseFloat(finalAncho) || 0));
       batchData.push({
         range: `Hoja 1!I${sheetRow}:L${sheetRow}`,
-        values: [[largo, ancho, profundidad, m2]]
+        values: [[finalLargo, finalAncho, finalProf, finalM2]]
       });
     }
 
+    if (tipoBache) batchData.push({ range: `Hoja 1!M${sheetRow}`, values: [[tipoBache]] });
+    if (status) batchData.push({ range: `Hoja 1!N${sheetRow}`, values: [[status]] });
     if (photoUrl) batchData.push({ range: `Hoja 1!O${sheetRow}`, values: [[photoUrl]] });
     if (photoCaja) batchData.push({ range: `Hoja 1!P${sheetRow}`, values: [[photoCaja]] });
     if (photoFinal) batchData.push({ range: `Hoja 1!Q${sheetRow}`, values: [[photoFinal]] });
-    if (status) batchData.push({ range: `Hoja 1!N${sheetRow}`, values: [[status]] });
-    if (tipoBache) batchData.push({ range: `Hoja 1!M${sheetRow}`, values: [[tipoBache]] });
+    
+    const finalCalle1 = calle_1 !== undefined ? calle_1 : calle1;
+    if (finalCalle1 !== undefined) batchData.push({ range: `Hoja 1!R${sheetRow}`, values: [[finalCalle1]] });
+
+    const finalCalle2 = calle_2 !== undefined ? calle_2 : calle2;
+    if (finalCalle2 !== undefined) batchData.push({ range: `Hoja 1!S${sheetRow}`, values: [[finalCalle2]] });
+
     if (usuario) batchData.push({ range: `Hoja 1!T${sheetRow}`, values: [[usuario]] });
 
     if (batchData.length === 0) {
@@ -219,7 +240,7 @@ export async function updateReportInSheet(sheetId, folio, updates) {
       return;
     }
 
-    // OPTIMIZATION: Single batchUpdate call instead of N individual update calls
+    // Single batchUpdate call
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: sheetId,
       requestBody: {
@@ -232,7 +253,50 @@ export async function updateReportInSheet(sheetId, folio, updates) {
   } catch (err) {
     const errorData = err.response ? err.response.data : err.message;
     console.error('[SHEETS ERROR] updateReportInSheet failed:', errorData);
+    throw err;
   }
+}
+
+export async function getNextFolioFromSheet(sheetId, inMemoryReports = []) {
+  let maxNum = 5000000;
+
+  // Check in-memory cache first
+  if (Array.isArray(inMemoryReports)) {
+    for (const r of inMemoryReports) {
+      const folioStr = String(r.folio || '').trim();
+      const match = folioStr.match(/^50(\d{5})$/);
+      if (match) {
+        const num = parseInt(folioStr, 10);
+        if (!isNaN(num) && num > maxNum) maxNum = num;
+      }
+    }
+  }
+
+  // Check Google Sheets
+  if (sheetId) {
+    try {
+      const auth = await getGoogleClient();
+      const sheets = google.sheets({ version: 'v4', auth });
+      const readRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: 'Hoja 1!A:A',
+      });
+      const rows = readRes.data.values || [];
+      for (const r of rows) {
+        const cell = String(r[0] || '').trim();
+        const match = cell.match(/^50(\d{5})$/);
+        if (match) {
+          const num = parseInt(cell, 10);
+          if (!isNaN(num) && num > maxNum) maxNum = num;
+        }
+      }
+    } catch (err) {
+      console.warn('[SHEETS WARN] getNextFolioFromSheet read error:', err.message);
+    }
+  }
+
+  const nextNum = maxNum + 1;
+  return String(nextNum);
 }
 
 export async function getAllReportsFromSheet(sheetId) {

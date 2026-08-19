@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { LayoutGrid, Plus, LayoutList, Map as MapIcon, WifiOff, LogOut } from 'lucide-react'
+import { LayoutGrid, Plus, LayoutList, Map as MapIcon, WifiOff, LogOut, AlertTriangle } from 'lucide-react'
 import { registerAutoSync } from './lib/syncService'
 import { getPendingItems } from './lib/robustStore'
 import { onAuthChange, signOut, type AppUser } from './lib/firebase'
+import { apiFetch } from './lib/apiFetch'
 import MetricsScreen from './screens/MetricsScreen'
 import FormScreen from './screens/FormScreen'
 import LogScreen from './screens/LogScreen'
@@ -17,6 +18,8 @@ export default function App() {
   const [user, setUser] = useState<AppUser | null>(null)
   const [userProfile, setUserProfile] = useState<{role: string, assignments: string[]} | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [pendingCorrectionsCount, setPendingCorrectionsCount] = useState<number>(0)
+  const [filterCorrectionsActive, setFilterCorrectionsActive] = useState<boolean>(false)
 
   // Listen to auth state (auto-restores from cache, works offline)
   useEffect(() => {
@@ -29,6 +32,28 @@ export default function App() {
     })
     return () => unsubscribe()
   }, [])
+
+  const fetchPendingCorrections = async () => {
+    try {
+      const res = await apiFetch('/api/corrections')
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data)) {
+          setPendingCorrectionsCount(data.length)
+        }
+      }
+    } catch {
+      // offline or silent
+    }
+  }
+
+  // Check pending corrections periodically
+  useEffect(() => {
+    if (!user) return
+    fetchPendingCorrections()
+    const interval = setInterval(fetchPendingCorrections, 15000)
+    return () => clearInterval(interval)
+  }, [user])
 
   // Initialize sync & pending count only when authenticated
   useEffect(() => {
@@ -101,6 +126,33 @@ export default function App() {
         <div className="header-top">
           <span className="brand-name">SP REGIS <span className="brand-accent">Servicios Públicos</span></span>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {user?.email?.toLowerCase() === 'juanpablobumblebee@gmail.com' && pendingCorrectionsCount > 0 && (
+              <button 
+                onClick={() => {
+                  setFilterCorrectionsActive(true)
+                  setActiveTab('BITACORA')
+                }}
+                title={`${pendingCorrectionsCount} solicitud(es) de corrección pendiente(s)`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                  background: '#fef3c7',
+                  border: '1.5px solid #f59e0b',
+                  color: '#b45309',
+                  fontSize: '0.7rem',
+                  fontWeight: 900,
+                  padding: '0.25rem 0.55rem',
+                  borderRadius: '9999px',
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 6px rgba(245, 158, 11, 0.25)'
+                }}
+              >
+                <AlertTriangle size={13} color="#d97706" />
+                <span>{pendingCorrectionsCount}</span>
+              </button>
+            )}
+
             {pendingCount > 0 && (
               <div className="offline-badge" title={`${pendingCount} reporte(s) pendiente(s) de sincronizar`}>
                 <WifiOff size={12} />
@@ -146,7 +198,10 @@ export default function App() {
           />
           <TabButton 
             active={activeTab === 'BITACORA'} 
-            onClick={() => setActiveTab('BITACORA')}
+            onClick={() => {
+              setFilterCorrectionsActive(false)
+              setActiveTab('BITACORA')
+            }}
             label="Bitácora"
             icon={<LayoutList size={20} />}
           />
@@ -162,7 +217,14 @@ export default function App() {
       <main className="app-main overflow-y-auto">
         {activeTab === 'METRICAS' && <MetricsScreen />}
         {activeTab === 'NUEVO' && <FormScreen userProfile={userProfile} />}
-        {activeTab === 'BITACORA' && <LogScreen userProfile={userProfile} />}
+        {activeTab === 'BITACORA' && (
+          <LogScreen 
+            userProfile={{ ...(userProfile || {}), email: user?.email }} 
+            initialFilter={filterCorrectionsActive ? 'CORRECCION' : undefined}
+            onFilterHandled={() => setFilterCorrectionsActive(false)}
+            onCorrectionsChanged={fetchPendingCorrections}
+          />
+        )}
         {activeTab === 'MAPA' && <MapScreen />}
       </main>
     </div>

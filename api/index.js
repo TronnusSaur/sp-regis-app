@@ -12,9 +12,10 @@ import https from 'https';
 // Production Libraries
 import { getAuthUrl, getTokensFromCode, setClientTokens } from './lib/auth.js';
 import { uploadFile, getOrCreateFolder } from './lib/drive.js';
-import { appendReportToSheet, updateReportInSheet, getAllReportsFromSheet } from './lib/sheets.js';
+import { appendReportToSheet, updateReportInSheet, getAllReportsFromSheet, getNextFolioFromSheet } from './lib/sheets.js';
 import { requireAuth, verifyFirebaseToken } from './lib/firebaseAdmin.js';
 import { saveTokens } from './lib/db.js';
+import { getPendingCorrections, addCorrectionRequest, getCorrectionById, markCorrectionApproved, discardCorrection } from './lib/corrections.js';
 
 const app = express();
 const upload = multer({ dest: '/tmp/' });
@@ -232,6 +233,18 @@ app.get('/api/reports', requireAuth, async (req, res) => {
   }
 });
 
+// Endpoint to get guaranteed next sequential folio
+app.get('/api/reports/next-folio', requireAuth, async (req, res) => {
+  try {
+    const sheetId = process.env.SHEET_ID;
+    const nextFolio = await getNextFolioFromSheet(sheetId, reportsCache);
+    res.json({ nextFolio, suffix: nextFolio.slice(2) });
+  } catch (err) {
+    console.error('[NEXT-FOLIO ERROR]', err);
+    res.status(500).json({ error: 'Error al calcular siguiente folio' });
+  }
+});
+
 app.get('/api/profile', requireAuth, async (req, res) => {
   res.json({
     email: req.user.email,
@@ -259,15 +272,21 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
     const finalContractId = sanitizeString(contractId || 'SP-TOLUCA', 50);
     const finalEmpresaName = sanitizeString(empresaName || 'Servicios Públicos Toluca', 200);
 
-    let folio = manualFolio;
-    if (folio && folio !== 'undefined') {
-      folio = sanitizeString(folio, 10);
-      if (!FOLIO_REGEX.test(folio)) {
-        return res.status(400).json({ error: `Folio inválido: "${folio}". Debe ser de 7 dígitos iniciando con 50 (ej: 5000001)` });
+    // Guaranteed sequential non-duplicate folio calculation
+    let folio = '';
+    const sheetId = process.env.SHEET_ID;
+    const calculatedNextFolio = await getNextFolioFromSheet(sheetId, reportsCache);
+
+    if (manualFolio && manualFolio !== 'undefined' && manualFolio !== 'auto' && FOLIO_REGEX.test(manualFolio)) {
+      // If manual folio provided, check if it already exists to prevent duplicate collision
+      const existsInCache = reportsCache.some(r => String(r.folio).trim() === manualFolio.trim());
+      if (existsInCache) {
+        folio = calculatedNextFolio;
+      } else {
+        folio = manualFolio;
       }
     } else {
-      const randomSeq = Math.floor(10000 + Math.random() * 90000);
-      folio = `50${randomSeq}`;
+      folio = calculatedNextFolio;
     }
 
 
@@ -431,6 +450,104 @@ app.patch('/api/reports/:folio/status', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[STATUS PATCH ERROR]', err);
     res.status(500).json({ error: 'Fallo al actualizar estatus' });
+  }
+});
+
+// --- CORRECTIONS API ---
+
+// Get all pending corrections
+app.get('/api/corrections', requireAuth, async (req, res) => {
+  try {
+    const pending = await getPendingCorrections();
+    res.json(pending);
+  } catch (err) {
+    console.error('[CORRECTIONS GET ERROR]', err);
+    res.status(500).json({ error: 'Error al obtener correcciones: ' + err.message });
+  }
+});
+
+// Submit a new correction request
+app.post('/api/corrections', requireAuth, async (req, res) => {
+  try {
+    const { folio, originalData, proposedData, reason } = req.body;
+    if (!folio || !proposedData || Object.keys(proposedData).length === 0) {
+      return res.status(400).json({ error: 'Folio y datos propuestos son obligatorios' });
+    }
+
+    const newCorrection = await addCorrectionRequest({
+      folio,
+      requestedBy: req.user.email,
+      originalData: originalData || {},
+      proposedData: proposedData || {},
+      reason: sanitizeString(reason || '', 300)
+    });
+
+    console.log(`[CORRECTION CREATED] Solicitud creada para folio ${folio} por ${req.user.email}`);
+    res.status(201).json(newCorrection);
+  } catch (err) {
+    console.error('[CORRECTIONS POST ERROR]', err);
+    res.status(500).json({ error: 'Error al crear solicitud de corrección: ' + err.message });
+  }
+});
+
+// Approve a correction (Admin only)
+app.post('/api/corrections/:id/approve', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const correction = await getCorrectionById(id);
+
+    if (!correction) {
+      return res.status(404).json({ error: 'Solicitud de corrección no encontrada' });
+    }
+
+    const sheetId = process.env.SHEET_ID;
+    if (sheetId && correction.proposedData) {
+      console.log(`[CORRECTION APPROVE] Aplicando cambios en Google Sheets para folio ${correction.folio}...`);
+      await updateReportInSheet(sheetId, correction.folio, {
+        ...correction.proposedData,
+        usuario: `Aprobado: ${req.user.email}`
+      });
+    }
+
+    // Update in-memory reports cache
+    const cachedIdx = reportsCache.findIndex(r => String(r.folio).trim() === String(correction.folio).trim());
+    if (cachedIdx !== -1) {
+      reportsCache[cachedIdx] = {
+        ...reportsCache[cachedIdx],
+        ...correction.proposedData,
+        updated_by: req.user.email
+      };
+    }
+
+    await markCorrectionApproved(id);
+    console.log(`[CORRECTION APPROVED] ✅ Solicitud ${id} para folio ${correction.folio} aprobada.`);
+    res.json({ success: true, message: 'Corrección aprobada y aplicada a la base de datos con éxito' });
+  } catch (err) {
+    console.error('[CORRECTIONS APPROVE ERROR]', err);
+    res.status(500).json({ error: 'Error al aprobar corrección: ' + err.message });
+  }
+});
+
+// Discard a correction (Admin only)
+app.post('/api/corrections/:id/discard', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await discardCorrection(id);
+    console.log(`[CORRECTION DISCARDED] Solicitud ${id} descartada.`);
+    res.json({ success: true, message: 'Solicitud de corrección descartada sin alterar la base de datos' });
+  } catch (err) {
+    console.error('[CORRECTIONS DISCARD ERROR]', err);
+    res.status(500).json({ error: 'Error al descartar corrección: ' + err.message });
+  }
+});
+
+app.delete('/api/corrections/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await discardCorrection(id);
+    res.json({ success: true, message: 'Solicitud eliminada' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

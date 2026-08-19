@@ -313,6 +313,23 @@
   box-shadow: 0 0 0 3px rgba(0, 184, 163, 0.15);
 }
 
+.folio-suffix-locked {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.25rem;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  text-align: center;
+  width: 100%;
+  border: 2px solid #cbd5e1;
+  border-radius: 0.75rem;
+  padding: 0.6rem;
+  color: #0f172a;
+  background: #f8fafc;
+  user-select: none;
+  cursor: default;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.03);
+}
+
 .folio-preview {
   font-size: 0.7rem;
   font-weight: 900;
