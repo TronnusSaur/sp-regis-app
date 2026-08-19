@@ -143,7 +143,7 @@ export default function LogScreen({
           apiReports = Array.isArray(json) ? json : []
           await Preferences.set({ key: 'cached_reports_list', value: JSON.stringify(apiReports) })
         }
-      } catch (e) {
+      } catch {
         console.warn('[OFFLINE] Cargando reportes guardados en caché local.')
         const { value } = await Preferences.get({ key: 'cached_reports_list' })
         if (value) {
@@ -166,7 +166,7 @@ export default function LogScreen({
       } catch (e) {
         console.warn('[CORRECTIONS] Error cargando correcciones:', e)
       }
-    } catch (err) {
+    } catch {
       console.error('[SYNC ERROR] No se pudieron cargar los datos.')
     } finally {
       setLoading(false)
@@ -344,7 +344,7 @@ export default function LogScreen({
     }
   }
 
-  // --- DOSSIER DETAIL VIEW ---
+  // --- DOSSIER DETAIL VIEW (EARLY RETURN) ---
   if (selectedReport) {
     const photoInicial = getPhotoForPhase(selectedReport, 'inicial');
     const photoCaja = getPhotoForPhase(selectedReport, 'caja');
