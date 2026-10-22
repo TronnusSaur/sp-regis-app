@@ -9,10 +9,15 @@ import path from 'path';
 import * as turf from '@turf/turf';
 import https from 'https';
 
-// Production Libraries
+// Production Libraries (Supabase sp_regis_test + Native Alfa Image Storage)
 import { getAuthUrl, getTokensFromCode, setClientTokens } from './lib/auth.js';
-import { uploadFile, getOrCreateFolder } from './lib/drive.js';
-import { appendReportToSheet, updateReportInSheet, getAllReportsFromSheet, getNextFolioFromSheet } from './lib/sheets.js';
+import { 
+  getAllReportsFromSupabase, 
+  getNextFolioFromSupabase, 
+  insertReportInSupabase, 
+  updateReportInSupabase, 
+  uploadPhotosToAlfaServer 
+} from './lib/supabase.js';
 import { requireAuth, verifyFirebaseToken } from './lib/firebaseAdmin.js';
 import { saveTokens } from './lib/db.js';
 import { getPendingCorrections, addCorrectionRequest, getCorrectionById, markCorrectionApproved, discardCorrection } from './lib/corrections.js';
@@ -210,18 +215,13 @@ function downloadImageToBuffer(url) {
 // --- IN-MEMORY CACHE FOR REPORTS ---
 let reportsCache = [];
 let lastCacheTime = 0;
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = 10000; // 10 seconds
 
 // --- REPORTS API (PROTECTED) ---
 app.get('/api/reports', requireAuth, async (req, res) => {
   try {
-    const sheetId = process.env.SHEET_ID;
-    if (!sheetId) {
-      return res.json(reportsCache);
-    }
-
     if (Date.now() - lastCacheTime > CACHE_TTL || reportsCache.length === 0) {
-      const reports = await getAllReportsFromSheet(sheetId);
+      const reports = await getAllReportsFromSupabase();
       reportsCache = reports;
       lastCacheTime = Date.now();
     }
@@ -236,8 +236,7 @@ app.get('/api/reports', requireAuth, async (req, res) => {
 // Endpoint to get guaranteed next sequential folio
 app.get('/api/reports/next-folio', requireAuth, async (req, res) => {
   try {
-    const sheetId = process.env.SHEET_ID;
-    const nextFolio = await getNextFolioFromSheet(sheetId, reportsCache);
+    const nextFolio = await getNextFolioFromSupabase(reportsCache);
     res.json({ nextFolio, suffix: nextFolio.slice(2) });
   } catch (err) {
     console.error('[NEXT-FOLIO ERROR]', err);
@@ -272,13 +271,11 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
     const finalContractId = sanitizeString(contractId || 'SP-TOLUCA', 50);
     const finalEmpresaName = sanitizeString(empresaName || 'Servicios Públicos Toluca', 200);
 
-    // Guaranteed sequential non-duplicate folio calculation
+    // Guaranteed sequential non-duplicate folio calculation from Supabase (sp_regis_test.bacheo)
     let folio = '';
-    const sheetId = process.env.SHEET_ID;
-    const calculatedNextFolio = await getNextFolioFromSheet(sheetId, reportsCache);
+    const calculatedNextFolio = await getNextFolioFromSupabase(reportsCache);
 
     if (manualFolio && manualFolio !== 'undefined' && manualFolio !== 'auto' && FOLIO_REGEX.test(manualFolio)) {
-      // If manual folio provided, check if it already exists to prevent duplicate collision
       const existsInCache = reportsCache.some(r => String(r.folio).trim() === manualFolio.trim());
       if (existsInCache) {
         folio = calculatedNextFolio;
@@ -288,7 +285,6 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
     } else {
       folio = calculatedNextFolio;
     }
-
 
     const files = req.files || {};
     const photoInicialFile = files.photoInicial?.[0] || files.photo?.[0];
@@ -305,8 +301,16 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
 
     const calculatedM2 = parseFloat(m2) || ((parseFloat(largo) || 0) * (parseFloat(ancho) || 0)) || 0;
 
+    const nowFormatted = new Intl.DateTimeFormat('es-MX', {
+      timeZone: 'America/Mexico_City',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).format(new Date());
+
     const newReport = {
       folio,
+      created_at: nowFormatted,
       contractId: finalContractId,
       empresaName: finalEmpresaName,
       lat: parseFloat(lat) || 0,
@@ -329,59 +333,42 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
       photoFinal: ''
     };
 
-    // Update in-memory cache immediately
-    reportsCache.unshift(newReport);
-
-    // 1. Upload fotos a Drive (await para Vercel serverless lifecycle)
+    // 1. Subir fotos nativas a Alfa (/home/kinger/imagenes/SERVICIOS PUBLICOS 2026/DGSP SEGUNDO SEMESTRE 2026/{folio})
     try {
-      const rootFolder = process.env.DRIVE_PARENT_FOLDER_ID;
-      const contractNumForFolder = (newReport.contractId.match(/\d+/)?.[0] || '0').padStart(3, '0');
-      const contractFolderName = `${contractNumForFolder} ${newReport.empresaName}`;
-      
-      let folioFolderId = null;
-      if (rootFolder) {
-        const contractFolderId = await getOrCreateFolder(contractFolderName, rootFolder);
-        folioFolderId = await getOrCreateFolder(newReport.folio, contractFolderId);
-      }
-
-      // Upload Inicial
-      if (photoInicialFile && folioFolderId) {
-        const buf = fs.readFileSync(photoInicialFile.path);
-        const driveRes = await uploadFile(`${newReport.folio}_inicial.jpg`, 'image/jpeg', buf, folioFolderId);
-        newReport.photoUrl = driveRes.webViewLink;
+      const filesMap = {};
+      if (photoInicialFile) {
+        filesMap.inicial = fs.readFileSync(photoInicialFile.path);
         cleanupTempFile(photoInicialFile);
       }
-
-      // Upload Caja
-      if (photoCajaFile && folioFolderId) {
-        const buf = fs.readFileSync(photoCajaFile.path);
-        const driveRes = await uploadFile(`${newReport.folio}_caja.jpg`, 'image/jpeg', buf, folioFolderId);
-        newReport.photoCaja = driveRes.webViewLink;
+      if (photoCajaFile) {
+        filesMap.caja = fs.readFileSync(photoCajaFile.path);
         cleanupTempFile(photoCajaFile);
       }
-
-      // Upload Final
-      if (photoFinalFile && folioFolderId) {
-        const buf = fs.readFileSync(photoFinalFile.path);
-        const driveRes = await uploadFile(`${newReport.folio}_final.jpg`, 'image/jpeg', buf, folioFolderId);
-        newReport.photoFinal = driveRes.webViewLink;
+      if (photoFinalFile) {
+        filesMap.terminado = fs.readFileSync(photoFinalFile.path);
         cleanupTempFile(photoFinalFile);
       }
-    } catch (driveErr) {
-      console.error(`[DRIVE ERROR] Folio ${newReport.folio}:`, driveErr.message);
-    }
 
-    // 2. Escribir en Google Sheets (await para Vercel serverless lifecycle)
-    try {
-      if (process.env.SHEET_ID) {
-        await appendReportToSheet(process.env.SHEET_ID, newReport);
-        console.log(`[SHEETS SUCCESS] ✅ Folio ${newReport.folio} registrado en Google Sheets.`);
+      if (Object.keys(filesMap).length > 0) {
+        const uploadedPaths = await uploadPhotosToAlfaServer(newReport.folio, filesMap);
+        if (uploadedPaths.photoUrl) newReport.photoUrl = uploadedPaths.photoUrl;
+        if (uploadedPaths.photoCaja) newReport.photoCaja = uploadedPaths.photoCaja;
+        if (uploadedPaths.photoFinal) newReport.photoFinal = uploadedPaths.photoFinal;
+        console.log(`[ALFA IMAGES SUCCESS] ✅ Fotos guardadas para folio ${newReport.folio}`);
       }
-    } catch (sheetsErr) {
-      console.error(`[SHEETS ERROR] Folio ${newReport.folio}:`, sheetsErr.message);
+    } catch (imgErr) {
+      console.error(`[ALFA IMAGES ERROR] Folio ${newReport.folio}:`, imgErr.message);
     }
 
-    // 3. Responder al cliente una vez completadas las subidas
+    // 2. Guardar registro en Supabase (sp_regis_test.bacheo)
+    await insertReportInSupabase(newReport);
+    console.log(`[SUPABASE SUCCESS] ✅ Folio ${newReport.folio} registrado en sp_regis_test.bacheo.`);
+
+    // Update in-memory cache immediately
+    reportsCache.unshift(newReport);
+    lastCacheTime = Date.now();
+
+    // 3. Responder al cliente
     res.status(201).json({
       folio: newReport.folio,
       status: newReport.status,
@@ -408,19 +395,19 @@ app.post('/api/reports/:folio/photo', requireAuth, upload.single('photo'), async
   const tempFilePath = req.file?.path || null;
 
   try {
-    if (tempFilePath && process.env.SHEET_ID) {
+    if (tempFilePath) {
       const buf = fs.readFileSync(tempFilePath);
-      const rootFolder = process.env.DRIVE_PARENT_FOLDER_ID;
-      const folioFolderId = await getOrCreateFolder(folio, rootFolder);
-      const photoName = `${folio}_${phase}.jpg`;
-      const driveRes = await uploadFile(photoName, 'image/jpeg', buf, folioFolderId);
+      const uploadedPaths = await uploadPhotosToAlfaServer(folio, {
+        [phase === 'caja' ? 'caja' : 'terminado']: buf
+      });
       
       const updates = { status: nextStatus, usuario: req.user.email };
-      if (phase === 'caja') updates.photoCaja = driveRes.webViewLink;
-      else updates.photoFinal = driveRes.webViewLink;
+      if (phase === 'caja') updates.photoCaja = uploadedPaths.photoCaja;
+      else updates.photoFinal = uploadedPaths.photoFinal;
 
-      await updateReportInSheet(process.env.SHEET_ID, folio, updates);
-      console.log(`[PHOTO SUCCESS] ✅ Foto ${phase} actualizada para folio ${folio}.`);
+      await updateReportInSupabase(folio, updates);
+      lastCacheTime = 0;
+      console.log(`[PHOTO SUCCESS] ✅ Foto ${phase} actualizada en Alfa y Supabase para folio ${folio}.`);
     }
   } catch (e) {
     console.error(`[PHOTO ERROR] ${e.message}`);
@@ -441,9 +428,7 @@ app.patch('/api/reports/:folio/status', requireAuth, async (req, res) => {
   }
 
   try {
-    if (process.env.SHEET_ID) {
-      await updateReportInSheet(process.env.SHEET_ID, folio, { status, usuario: req.user.email });
-    }
+    await updateReportInSupabase(folio, { status, usuario: req.user.email });
     const report = reportsCache.find(r => r.folio === folio) || { folio, status };
     report.status = status;
     res.json(report);
@@ -500,12 +485,12 @@ app.post('/api/corrections/:id/approve', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Solicitud de corrección no encontrada' });
     }
 
-    const sheetId = process.env.SHEET_ID;
-    if (sheetId && correction.proposedData) {
-      console.log(`[CORRECTION APPROVE] Aplicando cambios en Google Sheets para folio ${correction.folio}...`);
-      await updateReportInSheet(sheetId, correction.folio, {
+    if (correction.proposedData) {
+      console.log(`[CORRECTION APPROVE] Aplicando cambios en Supabase (sp_regis_test.bacheo) para folio ${correction.folio}...`);
+      await updateReportInSupabase(correction.folio, {
         ...correction.proposedData
       });
+      lastCacheTime = 0;
     }
 
     // Update in-memory reports cache
@@ -552,9 +537,7 @@ app.delete('/api/corrections/:id', requireAuth, async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[SP REGIS API] Servidor Express iniciado en http://localhost:${PORT}`);
-  console.log(`[SP REGIS API] SHEET_ID activo: ${process.env.SHEET_ID}`);
+  console.log(`[SP REGIS API] Motor activo: Supabase (sp_regis_test.bacheo) + Alfa Native Images`);
 });
 
 export default app;
-
-

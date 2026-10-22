@@ -76,6 +76,12 @@ function formatDriveImageUrl(rawUrl: string | null | undefined): string | null {
     return url;
   }
 
+  // Native Alfa Image Server relative path (e.g., imagenes/SERVICIOS%20PUBLICOS%202026/...)
+  if (url.startsWith('imagenes/') || url.startsWith('/imagenes/')) {
+    const cleanRel = url.replace(/^\/+/, '');
+    return `https://imagenes.soranoserver.com/${cleanRel}`;
+  }
+
   const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/) || url.match(/id=([a-zA-Z0-9_-]+)/);
   if (match && match[1]) {
     const fileId = match[1];
@@ -360,7 +366,7 @@ function DossierView({
       });
 
       if (res.ok) {
-        alert('✅ ¡Corrección aprobada con éxito! Los datos se actualizaron en Google Sheets.');
+        alert('✅ ¡Corrección aprobada con éxito! Los datos se actualizaron en Supabase (sp_regis_test).');
         window.dispatchEvent(new Event('sp-regis-corrections-updated'));
         onReportUpdated({
           ...report,
@@ -688,7 +694,7 @@ function DossierView({
             <CheckCircle2 size={16} className="text-emerald-600" /> Panel de Aprobación de Administrador
           </h3>
           <p className="text-xs text-emerald-700 font-medium mb-3">
-            Revisa los datos azules propuestos arriba. Al aprobar, se actualizarán directamente en Google Sheets.
+            Revisa los datos azules propuestos arriba. Al aprobar, se actualizarán directamente en Supabase (sp_regis_test.bacheo).
           </p>
           <div className="admin-correction-actions" style={{ borderTop: 'none', marginTop: 0, paddingTop: 0 }}>
             <button 
