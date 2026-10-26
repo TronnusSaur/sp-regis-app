@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { 
-  RefreshCcw, MapPin, ChevronLeft, Search, Calendar, User, 
+  RefreshCcw, MapPin, ChevronLeft, ChevronRight, Search, Calendar, User, 
   ExternalLink, Ruler, Image as ImageIcon, X, Maximize2, Layers, 
   AlertTriangle, CheckCircle2, Trash2, Edit3, Loader 
 } from 'lucide-react'
@@ -91,6 +91,8 @@ function formatDriveImageUrl(rawUrl: string | null | undefined): string | null {
   return url;
 }
 
+const ITEMS_PER_PAGE = 15;
+
 export default function LogScreen({ 
   userProfile, 
   initialFilter, 
@@ -100,68 +102,98 @@ export default function LogScreen({
   const [reports, setReports] = useState<Report[]>([])
   const [corrections, setCorrections] = useState<CorrectionRequest[]>([])
   const [loading, setLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
+  const hasLoadedOnceRef = React.useRef(false)
   
-  // Search & Filter state
+  // Search, Filter & Pagination state
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO' | 'CORRECCION'>('ALL')
+  const [currentPage, setCurrentPage] = useState(1)
 
   const isAdmin = userProfile?.email?.toLowerCase() === 'juanpablobumblebee@gmail.com';
 
   useEffect(() => {
     if (initialFilter) {
       setStatusFilter(initialFilter);
+      setCurrentPage(1);
       onFilterHandled?.();
     }
   }, [initialFilter]);
 
-  const fetchReportsAndCorrections = async () => {
-    setLoading(true)
+  const handleSearchChange = (q: string) => {
+    setSearchQuery(q);
+    setCurrentPage(1);
+  };
+
+  const handleStatusFilterChange = (s: 'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO' | 'CORRECCION') => {
+    setStatusFilter(s);
+    setCurrentPage(1);
+  };
+
+  const fetchCorrectionsSilently = async () => {
+    try {
+      const corrRes = await apiFetch('/api/corrections')
+      if (corrRes.ok) {
+        const corrJson = await corrRes.json()
+        setCorrections(Array.isArray(corrJson) ? corrJson : [])
+      }
+    } catch (e) {
+      console.warn('[CORRECTIONS] Error cargando correcciones:', e)
+    }
+  }
+
+  const fetchReportsAndCorrections = async (options?: { silent?: boolean }) => {
+    const isSilent = options?.silent ?? false
+    if (!hasLoadedOnceRef.current) {
+      setLoading(true)
+    } else if (!isSilent) {
+      setIsRefreshing(true)
+    }
+
     try {
       // 1. Fetch Reports
-      let apiReports: Report[] = []
       try {
         const response = await apiFetch('/api/reports')
         if (response.ok) {
           const json = await response.json()
-          apiReports = Array.isArray(json) ? json : []
+          const apiReports: Report[] = Array.isArray(json) ? json : []
+          setReports(apiReports)
+          hasLoadedOnceRef.current = true
           await Preferences.set({ key: 'cached_reports_list', value: JSON.stringify(apiReports) })
         }
       } catch {
         console.warn('[OFFLINE] Cargando reportes guardados en caché local.')
-        const { value } = await Preferences.get({ key: 'cached_reports_list' })
-        if (value) {
-          try {
-            apiReports = JSON.parse(value)
-          } catch {
-            apiReports = []
+        if (!hasLoadedOnceRef.current) {
+          const { value } = await Preferences.get({ key: 'cached_reports_list' })
+          if (value) {
+            try {
+              const cached: Report[] = JSON.parse(value)
+              setReports(Array.isArray(cached) ? cached : [])
+            } catch {
+              setReports([])
+            }
           }
+          hasLoadedOnceRef.current = true
         }
       }
-      setReports(apiReports)
 
       // 2. Fetch Corrections
-      try {
-        const corrRes = await apiFetch('/api/corrections')
-        if (corrRes.ok) {
-          const corrJson = await corrRes.json()
-          setCorrections(Array.isArray(corrJson) ? corrJson : [])
-        }
-      } catch (e) {
-        console.warn('[CORRECTIONS] Error cargando correcciones:', e)
-      }
+      await fetchCorrectionsSilently()
     } catch {
       console.error('[SYNC ERROR] No se pudieron cargar los datos.')
     } finally {
+      hasLoadedOnceRef.current = true
       setLoading(false)
+      setIsRefreshing(false)
     }
   }
 
   useEffect(() => {
     fetchReportsAndCorrections()
-    const pollTimer = setInterval(fetchReportsAndCorrections, 5000)
+    const pollTimer = setInterval(fetchCorrectionsSilently, 10000)
     const handleSync = () => {
-      fetchReportsAndCorrections()
+      fetchReportsAndCorrections({ silent: true })
     }
     window.addEventListener('sp-regis-corrections-updated', handleSync)
     return () => {
@@ -170,26 +202,38 @@ export default function LogScreen({
     }
   }, [])
 
-  // Filtered reports calculation
-  const filteredReports = reports.filter(r => {
+  // 1. Filter by search query first (for accurate status pill counters)
+  const searchMatchedReports = reports.filter(r => {
+    if (searchQuery.trim() === '') return true;
+    const q = searchQuery.toLowerCase().trim();
+    const folioMatch = (r.folio || '').toLowerCase().includes(q);
+    const calleMatch = (r.locationdesc || r.locationDesc || r.calle_1 || r.calle1 || '').toLowerCase().includes(q);
+    const coloniaMatch = (r.colonia || '').toLowerCase().includes(q);
+    const delegacionMatch = (r.delegacion || '').toLowerCase().includes(q);
+    return folioMatch || calleMatch || coloniaMatch || delegacionMatch;
+  });
+
+  const statusCounts = {
+    all: searchMatchedReports.length,
+    terminado: searchMatchedReports.filter(r => r.status === 'TERMINADO').length,
+    enProceso: searchMatchedReports.filter(r => r.status === 'EN PROCESO').length,
+    detectado: searchMatchedReports.filter(r => r.status === 'DETECTADO').length,
+    correccion: searchMatchedReports.filter(r => {
+      const rFolio = String(r.folio || '').trim();
+      return corrections.some(c => String(c.folio).trim() === rFolio);
+    }).length
+  };
+
+  // 2. Filter by status tab
+  const filteredReports = searchMatchedReports.filter(r => {
     const rFolio = String(r.folio || '').trim();
     const hasCorrection = corrections.some(c => String(c.folio).trim() === rFolio);
 
     if (statusFilter === 'CORRECCION') {
-      if (!hasCorrection) return false;
+      return hasCorrection;
     } else if (statusFilter !== 'ALL') {
-      if (r.status !== statusFilter) return false;
+      return r.status === statusFilter;
     }
-
-    if (searchQuery.trim() !== '') {
-      const q = searchQuery.toLowerCase().trim();
-      const folioMatch = (r.folio || '').toLowerCase().includes(q);
-      const calleMatch = (r.locationdesc || r.locationDesc || r.calle_1 || r.calle1 || '').toLowerCase().includes(q);
-      const coloniaMatch = (r.colonia || '').toLowerCase().includes(q);
-      const delegacionMatch = (r.delegacion || '').toLowerCase().includes(q);
-      return folioMatch || calleMatch || coloniaMatch || delegacionMatch;
-    }
-
     return true;
   });
 
@@ -204,11 +248,11 @@ export default function LogScreen({
           onBack={() => setSelectedReport(null)}
           onReportUpdated={(updated) => {
             setSelectedReport(updated);
-            fetchReportsAndCorrections();
+            fetchReportsAndCorrections({ silent: true });
             onCorrectionsChanged?.();
           }}
           onRefreshNeeded={() => {
-            fetchReportsAndCorrections();
+            fetchReportsAndCorrections({ silent: true });
             onCorrectionsChanged?.();
           }}
         />
@@ -216,15 +260,18 @@ export default function LogScreen({
         <ListView 
           key="list-view"
           reports={filteredReports}
-          totalCount={reports.length}
+          statusCounts={statusCounts}
           corrections={corrections}
           loading={loading}
+          isRefreshing={isRefreshing}
           searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
+          setSearchQuery={handleSearchChange}
           statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
+          setStatusFilter={handleStatusFilterChange}
+          currentPage={currentPage}
+          setCurrentPage={setCurrentPage}
           onSelectReport={(r) => setSelectedReport(r)}
-          onRefresh={fetchReportsAndCorrections}
+          onRefresh={() => fetchReportsAndCorrections({ silent: false })}
         />
       )}
     </div>
@@ -972,27 +1019,81 @@ function DossierView({
 // -------------------------------------------------------------
 function ListView({
   reports,
-  totalCount,
+  statusCounts,
   corrections,
   loading,
+  isRefreshing,
   searchQuery,
   setSearchQuery,
   statusFilter,
   setStatusFilter,
+  currentPage,
+  setCurrentPage,
   onSelectReport,
   onRefresh
 }: {
   reports: Report[];
-  totalCount: number;
+  statusCounts: {
+    all: number;
+    terminado: number;
+    enProceso: number;
+    detectado: number;
+    correccion: number;
+  };
   corrections: CorrectionRequest[];
   loading: boolean;
+  isRefreshing: boolean;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   statusFilter: 'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO' | 'CORRECCION';
   setStatusFilter: (s: 'ALL' | 'TERMINADO' | 'EN PROCESO' | 'DETECTADO' | 'CORRECCION') => void;
+  currentPage: number;
+  setCurrentPage: (p: number) => void;
   onSelectReport: (r: Report) => void;
   onRefresh: () => void;
 }) {
+  const totalFiltered = reports.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / ITEMS_PER_PAGE));
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+  const startIndex = (safePage - 1) * ITEMS_PER_PAGE;
+  const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, totalFiltered);
+  const paginatedReports = reports.slice(startIndex, endIndex);
+
+  const handlePageChange = (newPage: number) => {
+    const target = Math.min(Math.max(1, newPage), totalPages);
+    if (target === safePage) return;
+    setCurrentPage(target);
+    const mainContainer = document.querySelector('.app-main');
+    if (mainContainer) {
+      mainContainer.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const getPageNumbers = (current: number, total: number): (number | 'ellipsis-start' | 'ellipsis-end')[] => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const pages: (number | 'ellipsis-start' | 'ellipsis-end')[] = [1];
+    const start = Math.max(2, current - 1);
+    const end = Math.min(total - 1, current + 1);
+
+    if (start > 2) {
+      pages.push('ellipsis-start');
+    }
+    for (let i = start; i <= end; i++) {
+      pages.push(i);
+    }
+    if (end < total - 1) {
+      pages.push('ellipsis-end');
+    }
+    pages.push(total);
+    return pages;
+  };
+
+  const pageNumbers = getPageNumbers(safePage, totalPages);
+
   return (
     <div className="log-container animate-in">
       {/* Header */}
@@ -1006,7 +1107,7 @@ function ListView({
           className="p-2 bg-slate-100 text-cyan-600 rounded-xl hover:bg-slate-200 transition" 
           title="Actualizar datos"
         >
-          <RefreshCcw size={16} className={loading ? 'animate-spin' : ''} />
+          <RefreshCcw size={16} className={loading || isRefreshing ? 'animate-spin' : ''} />
         </button>
       </div>
 
@@ -1037,32 +1138,32 @@ function ListView({
             className={`filter-pill ${statusFilter === 'ALL' ? 'active' : ''}`}
             onClick={() => setStatusFilter('ALL')}
           >
-            Todos ({totalCount})
+            Todos ({statusCounts.all})
           </button>
           <button 
             className={`filter-pill ${statusFilter === 'TERMINADO' ? 'active' : ''}`}
             onClick={() => setStatusFilter('TERMINADO')}
           >
-            Terminados ({reports.filter(r => r.status === 'TERMINADO').length})
+            Terminados ({statusCounts.terminado})
           </button>
           <button 
             className={`filter-pill ${statusFilter === 'EN PROCESO' ? 'active' : ''}`}
             onClick={() => setStatusFilter('EN PROCESO')}
           >
-            En Proceso ({reports.filter(r => r.status === 'EN PROCESO').length})
+            En Proceso ({statusCounts.enProceso})
           </button>
           <button 
             className={`filter-pill ${statusFilter === 'DETECTADO' ? 'active' : ''}`}
             onClick={() => setStatusFilter('DETECTADO')}
           >
-            Detectados ({reports.filter(r => r.status === 'DETECTADO').length})
+            Detectados ({statusCounts.detectado})
           </button>
           <button 
             className={`filter-pill ${statusFilter === 'CORRECCION' ? 'active' : ''}`}
             onClick={() => setStatusFilter('CORRECCION')}
-            style={corrections.length > 0 ? { borderColor: '#f59e0b', color: statusFilter === 'CORRECCION' ? 'white' : '#b45309' } : {}}
+            style={statusCounts.correccion > 0 ? { borderColor: '#f59e0b', color: statusFilter === 'CORRECCION' ? 'white' : '#b45309' } : {}}
           >
-            ⚠️ Corrección ({corrections.length})
+            ⚠️ Corrección ({statusCounts.correccion})
           </button>
         </div>
       </div>
@@ -1079,72 +1180,132 @@ function ListView({
           </p>
         </div>
       ) : (
-        <div className="log-list">
-          {reports.map((report) => {
-            const photoInicial = formatDriveImageUrl(report.photourl || report.photoUrl);
-            const photoCaja = formatDriveImageUrl(report.photocaja || report.photoCaja);
-            const photoFinal = formatDriveImageUrl(report.photofinal || report.photoFinal);
-            const hasPendingCorr = corrections.some(c => String(c.folio).trim() === String(report.folio).trim());
+        <>
+          <div className="pagination-summary-top">
+            <span>Mostrando <strong>{startIndex + 1}–{endIndex}</strong> de <strong>{totalFiltered}</strong> folios</span>
+            <span>Página <strong>{safePage}</strong> de <strong>{totalPages}</strong></span>
+          </div>
 
-            return (
-              <div 
-                key={`card-${report.folio}`} 
-                className="report-card"
-                onClick={() => onSelectReport(report)}
-                style={hasPendingCorr ? { border: '1.5px solid #fcd34d', background: '#fffef9' } : {}}
-              >
-                <div className="card-top">
-                  <div>
-                    <span className="folio-tag">Folio {report.folio}</span>
-                    <p className="text-[10px] font-bold text-slate-400">
-                      {formatDisplayDate(report.created_at)}
-                    </p>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    {hasPendingCorr && (
-                      <span style={{
-                        fontSize: '0.58rem',
-                        fontWeight: 900,
-                        background: '#fef3c7',
-                        color: '#b45309',
-                        border: '1px solid #fcd34d',
-                        padding: '0.2rem 0.45rem',
-                        borderRadius: '9999px'
-                      }}>
-                        ⚠️ CORRECCIÓN
+          <div className="log-list">
+            {paginatedReports.map((report) => {
+              const photoInicial = formatDriveImageUrl(report.photourl || report.photoUrl);
+              const photoCaja = formatDriveImageUrl(report.photocaja || report.photoCaja);
+              const photoFinal = formatDriveImageUrl(report.photofinal || report.photoFinal);
+              const hasPendingCorr = corrections.some(c => String(c.folio).trim() === String(report.folio).trim());
+
+              return (
+                <div 
+                  key={`card-${report.folio}`} 
+                  className="report-card"
+                  onClick={() => onSelectReport(report)}
+                  style={hasPendingCorr ? { border: '1.5px solid #fcd34d', background: '#fffef9' } : {}}
+                >
+                  <div className="card-top">
+                    <div>
+                      <span className="folio-tag">Folio {report.folio}</span>
+                      <p className="text-[10px] font-bold text-slate-400">
+                        {formatDisplayDate(report.created_at)}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      {hasPendingCorr && (
+                        <span style={{
+                          fontSize: '0.58rem',
+                          fontWeight: 900,
+                          background: '#fef3c7',
+                          color: '#b45309',
+                          border: '1px solid #fcd34d',
+                          padding: '0.2rem 0.45rem',
+                          borderRadius: '9999px'
+                        }}>
+                          ⚠️ CORRECCIÓN
+                        </span>
+                      )}
+                      <span className={`status-tag ${report.status === 'DETECTADO' ? 'status-detected' : (report.status === 'EN PROCESO' ? 'status-process' : 'status-finished')}`}>
+                        {report.status}
                       </span>
-                    )}
-                    <span className={`status-tag ${report.status === 'DETECTADO' ? 'status-detected' : (report.status === 'EN PROCESO' ? 'status-process' : 'status-finished')}`}>
-                      {report.status}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="card-body">
-                  <div className="location-snippet">
-                    <MapPin size={14} className="text-cyan-600 flex-shrink-0" />
-                    <span className="truncate">{report.locationdesc || report.locationDesc || report.calle_1 || 'Ubicación sin referencia'}</span>
+                    </div>
                   </div>
 
-                  <div className="zone-chips">
-                    <span className="chip">{report.delegacion || 'TOLUCA'}</span>
-                    <span className="chip">{report.colonia || 'CENTRO'}</span>
-                  </div>
+                  <div className="card-body">
+                    <div className="location-snippet">
+                      <MapPin size={14} className="text-cyan-600 flex-shrink-0" />
+                      <span className="truncate">{report.locationdesc || report.locationDesc || report.calle_1 || 'Ubicación sin referencia'}</span>
+                    </div>
 
-                  <div className="card-footer-info">
-                    <span className="m2-badge">{report.m2 || '0'} m²</span>
-                    <div className="photo-dots">
-                      <span className="text-[10px] uppercase font-bold text-slate-400">Fotos:</span>
-                      <span className={`photo-dot ${photoInicial ? 'active' : ''}`} title="Inicial" />
-                      <span className={`photo-dot ${photoCaja ? 'active' : ''}`} title="Caja" />
-                      <span className={`photo-dot ${photoFinal ? 'active' : ''}`} title="Final" />
+                    <div className="zone-chips">
+                      <span className="chip">{report.delegacion || 'TOLUCA'}</span>
+                      <span className="chip">{report.colonia || 'CENTRO'}</span>
+                    </div>
+
+                    <div className="card-footer-info">
+                      <span className="m2-badge">{report.m2 || '0'} m²</span>
+                      <div className="photo-dots">
+                        <span className="text-[10px] uppercase font-bold text-slate-400">Fotos:</span>
+                        <span className={`photo-dot ${photoInicial ? 'active' : ''}`} title="Inicial" />
+                        <span className={`photo-dot ${photoCaja ? 'active' : ''}`} title="Caja" />
+                        <span className={`photo-dot ${photoFinal ? 'active' : ''}`} title="Final" />
+                      </div>
                     </div>
                   </div>
                 </div>
+              )
+            })}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="pagination-container">
+              <div className="pagination-controls">
+                <button
+                  type="button"
+                  className="page-nav-btn"
+                  onClick={() => handlePageChange(safePage - 1)}
+                  disabled={safePage <= 1}
+                  title="Página anterior"
+                >
+                  <ChevronLeft size={16} />
+                  <span>Anterior</span>
+                </button>
+
+                <div className="page-numbers-list">
+                  {pageNumbers.map((item) => {
+                    if (item === 'ellipsis-start' || item === 'ellipsis-end') {
+                      return (
+                        <span key={item} className="page-ellipsis">
+                          …
+                        </span>
+                      );
+                    }
+                    return (
+                      <button
+                        key={`page-${item}`}
+                        type="button"
+                        className={`page-btn ${safePage === item ? 'active' : ''}`}
+                        onClick={() => handlePageChange(item)}
+                      >
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  className="page-nav-btn"
+                  onClick={() => handlePageChange(safePage + 1)}
+                  disabled={safePage >= totalPages}
+                  title="Página siguiente"
+                >
+                  <span>Siguiente</span>
+                  <ChevronRight size={16} />
+                </button>
               </div>
-            )
-          })}
-        </div>
+              <div className="pagination-info">
+                Mostrando {startIndex + 1}–{endIndex} de {totalFiltered} expedientes ({ITEMS_PER_PAGE} por página)
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
