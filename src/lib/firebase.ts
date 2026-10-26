@@ -46,14 +46,26 @@ export async function signIn(emailInput: string, passwordInput: string): Promise
   };
 
   currentAppUser = appUser;
-  await Preferences.set({ key: SESSION_KEY, value: JSON.stringify(appUser) });
+  try {
+    await Preferences.set({ key: SESSION_KEY, value: JSON.stringify(appUser) });
+  } catch {
+    try {
+      localStorage.setItem(`CapacitorStorage.${SESSION_KEY}`, JSON.stringify(appUser));
+    } catch {}
+  }
   notifyListeners(appUser);
   return appUser;
 }
 
 export async function signOut(): Promise<void> {
   currentAppUser = null;
-  await Preferences.remove({ key: SESSION_KEY });
+  try {
+    await Preferences.remove({ key: SESSION_KEY });
+  } catch {
+    try {
+      localStorage.removeItem(`CapacitorStorage.${SESSION_KEY}`);
+    } catch {}
+  }
   notifyListeners(null);
 }
 
@@ -66,6 +78,13 @@ export async function getStoredUser(): Promise<AppUser | null> {
       return currentAppUser;
     }
   } catch (e) {
+    try {
+      const raw = localStorage.getItem(`CapacitorStorage.${SESSION_KEY}`);
+      if (raw) {
+        currentAppUser = JSON.parse(raw);
+        return currentAppUser;
+      }
+    } catch {}
     console.warn('[AUTH] Error al leer sesión cacheada:', e);
   }
   return null;
