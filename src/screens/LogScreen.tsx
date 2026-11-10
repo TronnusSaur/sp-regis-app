@@ -522,7 +522,7 @@ function DossierView({
         <div className="dossier-meta">
           <div className="flex items-center gap-2">
             <Calendar size={14} className="text-cyan-600" />
-            <span>Capturado el {formatDisplayDate(report.created_at)}</span>
+            <span>Fecha de trabajo: {formatDisplayDate(report.created_at)}</span>
           </div>
           <div className="flex items-center gap-2">
             <User size={14} className="text-cyan-600" />

@@ -466,5 +466,108 @@
   cursor: not-allowed;
 }
 
+/* ---- Folio & Date Grid ---- */
+.folio-date-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+@media (max-width: 640px) {
+  .folio-date-grid {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+  }
+}
+
+.auto-badge {
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: #0891b2;
+  background: #ecfeff;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid #cffafe;
+}
+
+.date-status-badge {
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.date-status-badge.today {
+  color: #0d9488;
+  background: #f0fdfa;
+  border: 1px solid #ccfbf1;
+}
+
+.date-status-badge.past {
+  color: #d97706;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+}
+
+.date-status-badge.future {
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fee2e2;
+}
+
+.date-control-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.date-quick-chips {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.date-chip {
+  flex: 1;
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.date-chip:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.date-chip.active {
+  background: #0891b2;
+  color: white;
+  border-color: #0891b2;
+  box-shadow: 0 2px 4px rgba(8, 145, 178, 0.25);
+}
+
+.date-picker-input {
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: #0f172a;
+  padding-left: 2.5rem;
+}
+
+
 
 

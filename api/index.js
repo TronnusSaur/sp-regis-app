@@ -16,7 +16,8 @@ import {
   getNextFolioFromSupabase, 
   insertReportInSupabase, 
   updateReportInSupabase, 
-  uploadPhotosToAlfaServer 
+  uploadPhotosToAlfaServer,
+  normalizeDateToDDMMYYYY
 } from './lib/supabase.js';
 import { requireAuth, verifyFirebaseToken } from './lib/firebaseAdmin.js';
 import { saveTokens } from './lib/db.js';
@@ -265,7 +266,8 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
     const { 
       folio: manualFolio, contractId, empresaName, lat, lng, 
       locationDesc, delegacion, colonia, tipoBache, 
-      calle1, calle2, largo, ancho, profundidad, m2
+      calle1, calle2, largo, ancho, profundidad, m2,
+      fecha
     } = req.body;
 
     const finalContractId = sanitizeString(contractId || 'SP-TOLUCA', 50);
@@ -308,9 +310,12 @@ app.post('/api/reports', requireAuth, multiUpload, async (req, res) => {
       year: 'numeric'
     }).format(new Date());
 
+    const finalFecha = normalizeDateToDDMMYYYY(fecha) || nowFormatted;
+
     const newReport = {
       folio,
-      created_at: nowFormatted,
+      created_at: finalFecha,
+      fecha: finalFecha,
       contractId: finalContractId,
       empresaName: finalEmpresaName,
       lat: parseFloat(lat) || 0,

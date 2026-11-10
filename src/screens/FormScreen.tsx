@@ -1,11 +1,46 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { MapPin, CheckCircle, Upload, Trash2, Loader, Compass } from 'lucide-react'
+import { MapPin, CheckCircle, Upload, Trash2, Loader, Compass, Calendar, Clock } from 'lucide-react'
 import { apiFetch } from '../lib/apiFetch'
 import { compressImage } from '../lib/imageUtils'
 import SuccessModal from '../components/SuccessModal'
 import './FormScreen.css'
 
 type PhotoType = 'inicial' | 'caja' | 'final';
+
+function getTodayString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getShiftedDateString(daysBack: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysBack);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getDaysDiffFromToday(dateStr: string): number {
+  if (!dateStr) return 0;
+  const parts = dateStr.split('-').map(Number);
+  if (parts.length < 3) return 0;
+  const target = new Date(parts[0], parts[1] - 1, parts[2]);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffTime = today.getTime() - target.getTime();
+  return Math.round(diffTime / (1000 * 60 * 60 * 24));
+}
+
+function formatFriendlyDate(dateStr: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length < 3) return dateStr;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
 
 export default function FormScreen({ userProfile }: { userProfile: any }) {
   const [formData, setFormData] = useState({
@@ -20,7 +55,8 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
     tipoBache: 'SUPERFICIAL',
     largo: '',
     ancho: '',
-    profundidad: ''
+    profundidad: '',
+    fechaTrabajo: getTodayString()
   })
 
   // Photos State
@@ -183,6 +219,9 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
     submission.append('calle2', formData.calle2);
     submission.append('delegacion', formData.delegacion);
     submission.append('colonia', formData.colonia);
+    if (formData.fechaTrabajo) {
+      submission.append('fecha', formData.fechaTrabajo);
+    }
     
     const profNum = parseFloat(formData.profundidad) || 0;
     const calculatedTipoBache = profNum > 0.07 ? 'PROFUNDO' : 'SUPERFICIAL';
@@ -251,7 +290,8 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
       colonia: '---',
       lat: 0,
       lng: 0,
-      tipoBache: 'SUPERFICIAL'
+      tipoBache: 'SUPERFICIAL',
+      fechaTrabajo: getTodayString()
     });
   }
 
@@ -301,18 +341,109 @@ export default function FormScreen({ userProfile }: { userProfile: any }) {
           </div>
         </div>
 
-        {/* 2. FOLIO AUTOGENERADO AUTOMÁTICO */}
-        <div className="input-group">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-            <label className="field-label" style={{ marginBottom: 0 }}>Folio del Bache (Autogenerado Consecutivo)*</label>
-            <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#0891b2', background: '#ecfeff', padding: '0.2rem 0.5rem', borderRadius: '9999px', border: '1px solid #cffafe' }}>
-              🔒 AUTO-ASIGNADO
-            </span>
+        {/* 2. FOLIO Y FECHA DE REALIZACIÓN */}
+        <div className="folio-date-grid">
+          {/* Folio Autogenerado */}
+          <div className="input-group mb-0">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+              <label className="field-label" style={{ marginBottom: 0 }}>Folio del Bache (Autogenerado)*</label>
+              <span className="auto-badge">
+                🔒 AUTO-ASIGNADO
+              </span>
+            </div>
+            <div className="folio-input-row" style={{ opacity: 0.95 }}>
+              <span className="folio-prefix">50</span>
+              <div className="folio-suffix-locked">
+                {isLoadingNextFolio ? '...' : autoFolio.slice(2)}
+              </div>
+            </div>
           </div>
-          <div className="folio-input-row" style={{ opacity: 0.95 }}>
-            <span className="folio-prefix">50</span>
-            <div className="folio-suffix-locked">
-              {isLoadingNextFolio ? '...' : autoFolio.slice(2)}
+
+          {/* Selector de Fecha de Trabajo */}
+          <div className="input-group mb-0">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+              <label className="field-label" style={{ marginBottom: 0 }}>
+                Fecha del Trabajo Realizado*
+              </label>
+              {(() => {
+                const diff = getDaysDiffFromToday(formData.fechaTrabajo);
+                if (diff === 0) {
+                  return (
+                    <span className="date-status-badge today">
+                      ⚡ HOY ({formatFriendlyDate(formData.fechaTrabajo)})
+                    </span>
+                  );
+                } else if (diff === 1) {
+                  return (
+                    <span className="date-status-badge past">
+                      ⏱️ AYER ({formatFriendlyDate(formData.fechaTrabajo)})
+                    </span>
+                  );
+                } else if (diff === 2) {
+                  return (
+                    <span className="date-status-badge past">
+                      🗓️ ANTIER ({formatFriendlyDate(formData.fechaTrabajo)})
+                    </span>
+                  );
+                } else if (diff > 2) {
+                  return (
+                    <span className="date-status-badge past">
+                      🗓️ HACE {diff} DÍAS ({formatFriendlyDate(formData.fechaTrabajo)})
+                    </span>
+                  );
+                } else {
+                  return (
+                    <span className="date-status-badge future">
+                      ⚠️ FECHA FUTURA
+                    </span>
+                  );
+                }
+              })()}
+            </div>
+
+            <div className="date-control-card">
+              <div className="date-quick-chips">
+                <button 
+                  type="button" 
+                  className={`date-chip ${formData.fechaTrabajo === getTodayString() ? 'active' : ''}`}
+                  onClick={() => setFormData(prev => ({ ...prev, fechaTrabajo: getTodayString() }))}
+                  title="Marcar fecha de hoy"
+                >
+                  ⚡ Hoy
+                </button>
+                <button 
+                  type="button" 
+                  className={`date-chip ${formData.fechaTrabajo === getShiftedDateString(1) ? 'active' : ''}`}
+                  onClick={() => setFormData(prev => ({ ...prev, fechaTrabajo: getShiftedDateString(1) }))}
+                  title="Marcar fecha de ayer"
+                >
+                  ⏱️ Ayer
+                </button>
+                <button 
+                  type="button" 
+                  className={`date-chip ${formData.fechaTrabajo === getShiftedDateString(2) ? 'active' : ''}`}
+                  onClick={() => setFormData(prev => ({ ...prev, fechaTrabajo: getShiftedDateString(2) }))}
+                  title="Marcar fecha de hace 2 días"
+                >
+                  🗓️ Antier
+                </button>
+              </div>
+
+              <div className="relative flex items-center">
+                <input 
+                  type="date"
+                  name="fechaTrabajo"
+                  className="input-main date-picker-input pl-10"
+                  value={formData.fechaTrabajo}
+                  max={getTodayString()}
+                  min="2026-01-01"
+                  onChange={handleInputChange}
+                  required
+                />
+                <span className="absolute left-3 text-cyan-600 pointer-events-none">
+                  <Calendar size={18} />
+                </span>
+              </div>
             </div>
           </div>
         </div>

@@ -63,6 +63,50 @@ export function stripAccents(str) {
     .toUpperCase();
 }
 
+/**
+ * Normaliza cualquier formato de fecha a DD/MM/YYYY para la base de datos Supabase.
+ * Soporta YYYY-MM-DD (HTML date input), DD/MM/YYYY e ISO strings.
+ */
+export function normalizeDateToDDMMYYYY(val) {
+  if (!val) return null;
+  const s = String(val).trim();
+  
+  // 1. Formato YYYY-MM-DD
+  const yyyymmdd = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (yyyymmdd) {
+    const year = yyyymmdd[1];
+    const month = yyyymmdd[2].padStart(2, '0');
+    const day = yyyymmdd[3].padStart(2, '0');
+    return `${day}/${month}/${year}`;
+  }
+
+  // 2. Formato DD/MM/YYYY
+  const ddmmyyyy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (ddmmyyyy) {
+    const day = ddmmyyyy[1].padStart(2, '0');
+    const month = ddmmyyyy[2].padStart(2, '0');
+    const year = ddmmyyyy[3];
+    return `${day}/${month}/${year}`;
+  }
+
+  // 3. Fallback con objeto Date
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    const parts = new Intl.DateTimeFormat('es-MX', {
+      timeZone: 'America/Mexico_City',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).formatToParts(d);
+    const day = parts.find(p => p.type === 'day')?.value || '01';
+    const month = parts.find(p => p.type === 'month')?.value || '01';
+    const year = parts.find(p => p.type === 'year')?.value || '2026';
+    return `${day}/${month}/${year}`;
+  }
+
+  return s;
+}
+
 export function resolveIdDelegacion(delegacionName) {
   const norm = stripAccents(delegacionName);
   if (DELEGACION_MAP[norm]) return DELEGACION_MAP[norm];
@@ -193,16 +237,19 @@ export async function insertReportInSupabase(report) {
   const pkFolio = `${cleanFolio}-2026`;
 
   const nowMx = new Date();
-  const fechaParts = new Intl.DateTimeFormat('es-MX', {
-    timeZone: 'America/Mexico_City',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric'
-  }).formatToParts(nowMx);
-  const d = fechaParts.find(p => p.type === 'day')?.value || '01';
-  const m = fechaParts.find(p => p.type === 'month')?.value || '01';
-  const y = fechaParts.find(p => p.type === 'year')?.value || '2026';
-  const fechaStr = `${d}/${m}/${y}`;
+  let fechaStr = normalizeDateToDDMMYYYY(report.fecha || report.created_at);
+  if (!fechaStr) {
+    const fechaParts = new Intl.DateTimeFormat('es-MX', {
+      timeZone: 'America/Mexico_City',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).formatToParts(nowMx);
+    const d = fechaParts.find(p => p.type === 'day')?.value || '01';
+    const m = fechaParts.find(p => p.type === 'month')?.value || '01';
+    const y = fechaParts.find(p => p.type === 'year')?.value || '2026';
+    fechaStr = `${d}/${m}/${y}`;
+  }
 
   const normDelegacion = stripAccents(report.delegacion || 'CENTRO HISTORICO');
   const normColonia = stripAccents(report.colonia || 'CENTRO');
@@ -365,6 +412,13 @@ export async function updateReportInSupabase(folio, updates) {
   if (photoUrl) patchData.fotoBache1 = photoUrl;
   if (photoCaja) patchData.fotoBacheProceso1 = photoCaja;
   if (photoFinal) patchData.fotoBacheTerminado1 = photoFinal;
+
+  if (updates.fecha !== undefined || updates.created_at !== undefined) {
+    const normF = normalizeDateToDDMMYYYY(updates.fecha !== undefined ? updates.fecha : updates.created_at);
+    if (normF) {
+      patchData.fecha = normF;
+    }
+  }
 
   if (Object.keys(patchData).length === 0) return null;
 
